@@ -1,0 +1,28 @@
+{
+  "name": "reacthome-daemon",
+  "version": "1.0.0",
+  "main": "daemon.js",
+  "author": "Evgeny <gazdovsky@gmail.com>",
+  "license": "MIT",
+  "dependencies": {
+    "apn": "^2.2.0",
+    "better-sqlite3": "^11.9.1",
+    "color-convert": "^2.0.1",
+    "crc": "^3.8.0",
+    "cron": "^1.7.2",
+    "debounce": "^1.2.0",
+    "fast-deep-equal": "github:gev/fast-deep-equal",
+    "fast-memoize": "^2.5.1",
+    "fastest-levenshtein": "^1.0.16",
+    "firebase-admin": "^11.0.1",
+    "level": "^8.0.0",
+    "node-fetch": "^2.6.0",
+    "node-pty": "^0.10.1",
+    "reacthome-ircodes": "github:gev/reacthome-ircodes",
+    "sdp-transform": "^2.13.0",
+    "serialport": "^10.4.0",
+    "sip": "^0.0.5",
+    "uuid": "^8.3.2",
+    "ws": "^7.2.5"
+  }
+}

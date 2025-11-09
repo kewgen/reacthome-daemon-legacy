@@ -1,0 +1,138 @@
+[
+  {
+    "out" : [
+      "door_button",
+      "leakage reset 1", "leakage reset 2",
+      "water valve 1", "water valve 2",  "water valve 3", "water valve 4"
+    ],
+    "in" : [
+      "armed",
+      "motion 1", "motion 2", "motion 3", "motion 4", "motion 5", "motion 6", "motion 7", "motion 8", "motion 9", "motion 10",
+      "button 1.1",
+      "button 2.1",  "button 2.2",   "button 2.3",  "button 2.4",
+      "button 3.1",  "button 3.2",   "button 3.3",  "button 3.4",
+      "button 4.1",  "button 4.2",
+      "button 5.1",  "button 5.2",   "button 5.3",  "button 5.4",
+      "button 6.1",  "button 6.2",   "button 6.3",  "button 6.4",
+      "button 7.1",  "button 7.2",
+      "button 8.1",  "button 8.2",   "button 8.3",  "button 8.4",
+      null,
+      "button 9.1",  "button 9.2",   "button 9.3",  "button 9.4",
+      "button 10.1", "button 10.2",  "button 10.3", "button 10.4",
+      "button 11.1",
+      "button 12.1",
+      "button 13.1", "button 13.2",  "button 13.3", "button 13.4",
+      null,
+      null,
+      "leakage 1", "leakage 2", "leakage 3", "leakage 4", "leakage 5", "leakage 6",
+      null, null,
+      "reed",
+      null,
+      "smoke",
+      null,
+      "biometry 1", "biometry 2", "biometry 3",
+      null,
+      "door_button",
+      "burglary",
+      "leakage alarm 1", "leakage alarm 2", "leakage alarm 3", "leakage alarm 4", "leakage alarm 5", "leakage alarm 6",
+      null, null, null, null, "water valve 1", "water valve 2", "water valve 3", "water valve 4"
+    ]
+  },
+
+  {
+    "out": [],
+    "in": [
+      "water_counter_1",
+      "water_counter_2",
+      "water_counter_3",
+      "water_counter_4",
+
+      "vent_power",
+      "vent_fan_speed",
+      "vent_damper",
+
+      "acc1_power",
+      "acc1_mode",
+      "acc1_fan_speed",
+      "acc1_vane_position",
+
+      "acc2_power",
+      "acc2_mode",
+      "acc2_fan_speed",
+      "acc2_vane_position",
+
+      "acc3_power",
+      "acc3_mode",
+      "acc3_fan_speed",
+      "acc3_vane_position",
+
+      "acc4_power",
+      "acc4_mode",
+      "acc4_fan_speed",
+      "acc4_vane_position",
+
+      "t1_air_temperature",
+      "t1_humidity",
+      "t1_floor_temperature",
+
+      "t2_air_temperature",
+      "t2_humidity",
+      "t2_floor_temperature",
+
+      "t3_air_temperature",
+      "t3_humidity",
+
+      "t4_air_temperature",
+      "t4_humidity",
+      "t4_floor_temperature",
+
+      "t5_air_temperature",
+      "t5_humidity",
+
+      "t6_air_temperature",
+      "t6_humidity",
+      "t6_floor_temperature",
+
+      "t7_air_temperature",
+      "t7_humidity",
+      "t7_floor_temperature",
+
+      "t8_air_temperature",
+      "t8_humidity",
+      "t8_floor_temperature",
+
+      "ventilator_relay_k1",
+      "ventilator_relay_k6",
+      "ventilator_relay_k7",
+      "ventilator_relay_k8",
+
+      "voltage_phase_a",
+      "voltage_phase_b",
+      "voltage_phase_c",
+
+      "current_phase_a",
+      "current_phase_b",
+      "current_phase_c",
+
+      "power_phase_a",
+      "power_phase_b",
+      "power_phase_c",
+
+      "room1_set_point",
+      "room2_set_point",
+      "room3_set_point",
+      "room4_set_point",
+      "room5_set_point",
+      "room6_set_point",
+      "room7_set_point",
+      "room8_set_point",
+
+      "room1_floor_power",
+      "room2_floor_power",
+      "room4_floor_power",
+      "room6_floor_power",
+      "room7_floor_power",
+      "room8_floor_power"
+    ]
+  }
+]
