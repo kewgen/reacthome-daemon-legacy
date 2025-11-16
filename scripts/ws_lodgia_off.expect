@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+#
+# Отправляет в локальный WebSocket команду выключения света локации "Лоджия"
+# Требует: npx (wscat), доступ к ws://192.168.88.4:3000
+#
+
+set timeout 12
+set ws_uri "ws://192.168.88.4:3000"
+set payload "{\"type\":\"ACTION_SITE_LIGHT_OFF\",\"id\":\"Лоджия\"}"
+
+spawn npx --yes wscat -c $ws_uri
+expect {
+  -re {connected} { }
+  timeout { }
+}
+send -- "$payload\r"
+
+# Ждём до 10 секунд любые ответы (ACTION_SET и пр.)
+set deadline [expr {[clock seconds] + 10}]
+while {[clock seconds] < $deadline} {
+  expect {
+    -re {.+} {
+      send_user -- "$expect_out(0,string)\n"
+    }
+    timeout {
+      break
+    }
+  }
+}
+
+send -- "\004"
+expect eof
+
+

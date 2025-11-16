@@ -1,0 +1,1 @@
+выполни test_lodgia_lighting.py

@@ -23,3 +23,38 @@ var
 ircodes
 tmp
 dist
+
+# Reports and temporary analysis files
+reports/
+# Исключаем важные отчеты (если нужно)
+# !reports/network-report-*.md
+# !reports/PROJECT_DESCRIPTION.md
+
+# Temporary directories with dates
+*-*/
+db-dump-*/
+wifi */
+
+# Temporary text files (inventory, dumps, etc.)
+*_inventory.txt
+mikrotik_*.txt
+tmp_*.txt
+*-dump*.txt
+*-commands.txt
+pi_*.txt
+
+# Temporary API/auth files
+omada_api_tmp/
+omada_northbound/
+
+# Archives and binary dumps
+*.tar.gz
+*.b64
+*.bak
+*.tmp
+
+# Test database dumps
+test-db-tmp/
+
+# Archive of temporary scripts
+archive/
