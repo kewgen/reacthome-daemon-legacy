@@ -50,6 +50,7 @@ WebSocket API на порту 3000 предоставляет единый ин�
 
 ### URL подключения
 
+#### Локальное подключение
 ```
 ws://<host>:3000
 ```
@@ -59,9 +60,29 @@ ws://<host>:3000
 ws://192.168.88.4:3000
 ```
 
+#### Удалённое подключение через Gateway
+```
+wss://gate.reacthome.net/<mac-address>
+```
+
+**Пример:**
+```
+wss://gate.reacthome.net/fd6765f1-ed61-4ae4-8d72-9a078a9f4316
+```
+
+**Протокол:** При подключении к gateway необходимо указать subprotocol `listen`:
+```python
+websocket = await websockets.connect(
+    "wss://gate.reacthome.net/fd6765f1-ed61-4ae4-8d72-9a078a9f4316",
+    subprotocols=["listen"]
+)
+```
+
 ### Установка соединения
 
-При подключении сервер автоматически:
+#### Локальное подключение
+
+При подключении к локальному серверу (`ws://<host>:3000`) сервер автоматически:
 1. Создаёт уникальную сессию (UUID) для клиента
 2. Регистрирует клиента в системе пиров (peers)
 3. Готов принимать команды
@@ -83,9 +104,58 @@ server.on("connection", (socket) => {
 });
 ```
 
+#### Удалённое подключение через Gateway
+
+При подключении к gateway (`wss://gate.reacthome.net/<mac>`) процесс следующий:
+
+1. **Клиент подключается** к gateway с subprotocol `listen`
+2. **Gateway создаёт session ID** (UUID) для клиента
+3. **Gateway проксирует сообщения** к демону, добавляя session ID как префикс
+4. **Демон получает сообщения** в формате: `{session_id}{json_message}`
+
+**⚠️ КРИТИЧЕСКИ ВАЖНО: Session ID добавляется gateway сервером**
+
+**Клиент НЕ должен добавлять session ID к сообщениям!**
+
+```python
+# ✅ ПРАВИЛЬНО - отправляем чистый JSON
+await websocket.send(json.dumps({
+    "type": "ACTION_SCRIPT_RUN",
+    "id": "script-uuid"
+}))
+
+# ❌ НЕПРАВИЛЬНО - НЕ добавляйте session ID!
+# Это приведёт к двойному префиксу и ошибке парсинга JSON
+session_id = "123e4567-e89b-12d3-a456-426614174000"
+await websocket.send(session_id + json.dumps({
+    "type": "ACTION_SCRIPT_RUN",
+    "id": "script-uuid"
+}))
+```
+
+**Что происходит при двойном session ID:**
+- Клиент отправляет: `{session_id_1}{json}`
+- Gateway добавляет: `{session_id_2}{session_id_1}{json}`
+- Демон получает: `{session_id_2}{session_id_1}{json}`
+- Демон пытается распарсить `{session_id_1}{json}` как JSON → **Ошибка!**
+
+**Код gateway:** `src/websocket/gate.js`
+
+```javascript
+socket.on("message", (data) => {
+  const dataStr = typeof data === 'string' ? data : data.toString('utf8');
+  const session = dataStr.substring(0, 36); // Извлекаем session ID
+  const message = dataStr.substring(36);     // Остальное - JSON
+  // ...
+  handle(session, message);
+});
+```
+
 ### Сессия
 
 - Каждое подключение получает уникальный UUID сессии
+- При локальном подключении сессия создаётся сервером
+- При подключении через gateway сессия создаётся gateway сервером
 - Сессия используется для маршрутизации ответов
 - При отключении сессия удаляется автоматически
 
@@ -397,6 +467,28 @@ if data.get("type") == "list":
 - Можно запросить несколько объектов одновременно
 - Ассеты возвращаются в формате base64
 - Если объект не найден, сообщение не отправляется
+- **GET работает как через локальное подключение, так и через gateway**
+
+**Пример через gateway:**
+```python
+# Подключение к gateway
+websocket = await websockets.connect(
+    "wss://gate.reacthome.net/fd6765f1-ed61-4ae4-8d72-9a078a9f4316",
+    subprotocols=["listen"]
+)
+
+# Отправка GET запроса (без session ID префикса!)
+await websocket.send(json.dumps({
+    "type": "get",
+    "state": ["34731215-af9b-4847-b2f9-67c8940271c0"]
+}))
+
+# Получение ответа (gateway автоматически добавит session ID)
+response = await websocket.recv()
+# Gateway отправляет: {session_id}{json_message}
+# Нужно удалить первые 36 символов (session ID)
+data = json.loads(response[36:])  # Удаляем session ID префикс
+```
 
 **Код:** `src/websocket/handle.js:77-79`, `src/init/get.js`
 
@@ -1212,6 +1304,159 @@ async def connect_with_reconnect(uri, max_retries=5):
 
 ---
 
+## Gateway: Работа через удалённый шлюз
+
+### Обзор
+
+Gateway (`wss://gate.reacthome.net`) позволяет подключаться к демону удалённо через безопасное WebSocket соединение (WSS). Gateway проксирует сообщения между клиентом и демоном, добавляя session ID для маршрутизации.
+
+### Подключение
+
+```python
+import websockets
+import json
+
+# Подключение к gateway
+websocket = await websockets.connect(
+    "wss://gate.reacthome.net/fd6765f1-ed61-4ae4-8d72-9a078a9f4316",
+    subprotocols=["listen"]  # Обязательно указать subprotocol
+)
+```
+
+### Формат сообщений
+
+#### Отправка сообщений (клиент → gateway → демон)
+
+**⚠️ КРИТИЧЕСКИ ВАЖНО:** Клиент отправляет **чистый JSON без префиксов**:
+
+```python
+# ✅ ПРАВИЛЬНО
+await websocket.send(json.dumps({
+    "type": "ACTION_SCRIPT_RUN",
+    "id": "83db5b75-fa69-42f9-bd57-ee9f33d59ed7"
+}))
+```
+
+Gateway автоматически добавит session ID при маршрутизации к демону:
+```
+{session_id}{json_message}
+```
+
+#### Получение сообщений (демон → gateway → клиент)
+
+Gateway отправляет сообщения с префиксом session ID (36 символов UUID):
+
+```python
+raw = await websocket.recv()
+# raw = "123e4567-e89b-12d3-a456-426614174000{"type":"ACTION_SET",...}"
+
+# Удаляем session ID префикс
+session_id = raw[:36]
+message = json.loads(raw[36:])
+```
+
+### Типичные ошибки
+
+#### ❌ Ошибка: Двойной session ID
+
+**Проблема:** Клиент добавляет session ID, gateway тоже добавляет → двойной префикс
+
+```python
+# ❌ НЕПРАВИЛЬНО
+session_id = "123e4567-e89b-12d3-a456-426614174000"
+await websocket.send(session_id + json.dumps({"type": "ACTION_SCRIPT_RUN", "id": "..."}))
+```
+
+**Результат:** Демон получает `{session_id_2}{session_id_1}{json}` и не может распарсить JSON
+
+**Решение:** Отправлять чистый JSON, gateway сам добавит session ID
+
+#### ❌ Ошибка: Не указан subprotocol
+
+**Проблема:** Gateway требует subprotocol `listen`
+
+```python
+# ❌ НЕПРАВИЛЬНО
+websocket = await websockets.connect("wss://gate.reacthome.net/...")
+```
+
+**Решение:** Указать subprotocol при подключении
+
+```python
+# ✅ ПРАВИЛЬНО
+websocket = await websockets.connect(
+    "wss://gate.reacthome.net/...",
+    subprotocols=["listen"]
+)
+```
+
+### Примеры использования
+
+#### Выполнение скрипта через gateway
+
+```python
+import asyncio
+import json
+import websockets
+
+async def run_script_via_gateway(script_id: str, mac_address: str):
+    uri = f"wss://gate.reacthome.net/{mac_address}"
+    
+    async with websockets.connect(uri, subprotocols=["listen"]) as ws:
+        # Отправляем команду (без session ID!)
+        await ws.send(json.dumps({
+            "type": "ACTION_SCRIPT_RUN",
+            "id": script_id
+        }))
+        
+        # Получаем ответы (с session ID префиксом)
+        while True:
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                # Удаляем session ID префикс
+                message = json.loads(raw[36:])
+                print(f"Получено: {message}")
+            except asyncio.TimeoutError:
+                break
+
+asyncio.run(run_script_via_gateway(
+    "83db5b75-fa69-42f9-bd57-ee9f33d59ed7",
+    "fd6765f1-ed61-4ae4-8d72-9a078a9f4316"
+))
+```
+
+#### GET запрос через gateway
+
+```python
+async def get_device_state_via_gateway(device_id: str, mac_address: str):
+    uri = f"wss://gate.reacthome.net/{mac_address}"
+    
+    async with websockets.connect(uri, subprotocols=["listen"]) as ws:
+        # Отправляем GET запрос
+        await ws.send(json.dumps({
+            "type": "get",
+            "state": [device_id]
+        }))
+        
+        # Получаем ответ
+        raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+        message = json.loads(raw[36:])  # Удаляем session ID
+        
+        if message.get("type") == "ACTION_SET" and message.get("id") == device_id:
+            return message.get("payload")
+    
+    return None
+```
+
+### Интеграционные тесты
+
+Примеры работы с gateway можно найти в интеграционных тестах:
+
+- `tests/integration/test_bra_device_detection_external.py` - тест работы через gateway
+- Демонстрирует правильное подключение, отправку команд и обработку ответов
+
+---
+
 ## См. также
 
 - [WEBSOCKET_PORT_3000_GUIDE.md](./WEBSOCKET_PORT_3000_GUIDE.md) - краткое руководство
@@ -1219,9 +1464,10 @@ async def connect_with_reconnect(uri, max_retries=5):
 - [SCRIPT_EXECUTION_QUICK_START.md](./SCRIPT_EXECUTION_QUICK_START.md) - быстрый старт выполнения скриптов
 - [SCRIPT_SEARCH_METHODOLOGY.md](./SCRIPT_SEARCH_METHODOLOGY.md) - методика поиска скриптов
 - [LODGIA_LIGHT_CONTROL_GUIDE.md](./LODGIA_LIGHT_CONTROL_GUIDE.md) - управление освещением
+- [gateway-logging-guide.md](./gateway-logging-guide.md) - руководство по логированию gateway
 
 ---
 
-**Версия документа:** 1.0  
-**Последнее обновление:** 2025-11-16
+**Версия документа:** 1.1  
+**Последнее обновление:** 2025-11-22
 
