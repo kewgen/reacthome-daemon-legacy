@@ -1,5 +1,8 @@
 # Быстрый старт: Управление освещением в "Лоджия"
 
+**Дата создания:** 2025-11-22  
+**Версия:** 1.0
+
 ## 🚀 За 30 секунд
 
 ```bash
@@ -45,4 +48,19 @@ node scripts/check-device-bind.js
 ## 📚 Полная документация
 
 См. [LODGIA_LIGHT_CONTROL_GUIDE.md](./LODGIA_LIGHT_CONTROL_GUIDE.md) для подробной информации.
+
+---
+
+## См. также
+
+- **[LODGIA_LIGHT_CONTROL_GUIDE.md](./LODGIA_LIGHT_CONTROL_GUIDE.md)** - полное руководство по управлению освещением в Лоджии
+- **[WEBSOCKET_API_REFERENCE.md](./WEBSOCKET_API_REFERENCE.md)** - описание WebSocket API
+- **[WEBSOCKET_PORT_3000_GUIDE.md](./WEBSOCKET_PORT_3000_GUIDE.md)** - руководство по WebSocket на порту 3000
+- `tests/integration/test_lodgia_lighting.py` - интеграционные тесты управления освещением
+- `scripts/check-lodgia-id.js` - утилита проверки ID локации
+
+---
+
+**Версия документа:** 1.0  
+**Последнее обновление:** 2025-11-22
 

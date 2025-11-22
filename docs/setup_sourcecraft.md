@@ -1,6 +1,7 @@
 # Настройка SourceCraft для проекта
 
 **Дата создания:** 2025-01-16  
+**Версия:** 1.0  
 **Организация:** kulagin-eugeny-i-kompaniia  
 **Репозиторий:** reacthome  
 **URL репозитория:** https://sourcecraft.dev/kulagin-eugeny-i-kompaniia/reacthome
