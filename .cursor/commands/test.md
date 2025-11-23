@@ -1,1 +1,1 @@
-выполни test_lodgia_lighting.py
+cd /Users/evgeniy/Documents/Work/reacthome-daemon-legacy-main && python3 -m pytest tests/integration/ -v
