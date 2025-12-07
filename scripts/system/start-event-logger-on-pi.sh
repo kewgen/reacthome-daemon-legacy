@@ -1,10 +1,9 @@
 #!/bin/bash
-# Скрипт для запуска event-logger на Raspberry Pi
+# Запуск event-logger на Raspberry Pi
 # Использование: ./scripts/system/start-event-logger-on-pi.sh
 
 set -e
 
-# Загружаем переменные из .env
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -21,11 +20,10 @@ if [ -z "$PASS" ]; then
     exit 1
 fi
 
-# Создаём временный expect скрипт
 TMP_EXPECT=$(mktemp)
 cat > "$TMP_EXPECT" << 'EXPECT_EOF'
 #!/usr/bin/expect -f
-set timeout 120
+set timeout 60
 set host [lindex $argv 0]
 set user [lindex $argv 1]
 set pass [lindex $argv 2]
@@ -44,63 +42,75 @@ EXPECT_EOF
 chmod +x "$TMP_EXPECT"
 
 run_on_pi() {
-    "$TMP_EXPECT" "$HOST" "$USER" "$PASS" "$1" 2>/dev/null | grep -v "password:" | grep -v "spawn" | grep -v "Warning" | grep -v "Connection closed" | sed 's/Connection to.*closed\.//' | tr -d '\r' || true
+    "$TMP_EXPECT" "$HOST" "$USER" "$PASS" "$1" 2>/dev/null | grep -v "password:" | grep -v "spawn" | grep -v "Warning: Permanently added" | grep -v "Connection closed" | sed 's/Connection to.*closed\.//' | tr -d '\r' || true
 }
 
 echo "=========================================="
 echo "Запуск event-logger на Raspberry Pi"
 echo "=========================================="
+echo "Хост: ${USER}@${HOST}"
 echo ""
 
-# Проверяем WebSocket порт
-echo "=== 1. Проверка WebSocket порта ==="
-PORT_CHECK=$(run_on_pi "netstat -tuln 2>/dev/null | grep ':3000' || ss -tuln 2>/dev/null | grep ':3000' || echo 'Порт 3000 не найден'")
-echo "$PORT_CHECK"
+# 1. Проверяем, существует ли файл event-logger.js
+echo "=== 1. Проверка файла event-logger.js ==="
+FILE_CHECK=$(run_on_pi "cd $PROJECT_DIR && ls -lh event-logger.js 2>&1")
+echo "$FILE_CHECK"
 echo ""
 
-# Проверяем статус event-logger
+if echo "$FILE_CHECK" | grep -q "No such file"; then
+    echo "❌ Файл event-logger.js не найден!"
+    rm -f "$TMP_EXPECT"
+    exit 1
+fi
+
+# 2. Проверяем текущий статус
 echo "=== 2. Текущий статус event-logger ==="
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>/dev/null | grep -E 'status|uptime|restarts' | head -3 || echo 'event-logger не запущен'")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 list | grep event-logger || echo 'NOT_FOUND'")
 echo "$STATUS"
 echo ""
 
-# Запускаем event-logger
-echo "=== 3. Запуск event-logger ==="
-START_RESULT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger 2>&1 || pm2 restart reacthome-event-logger 2>&1")
-echo "$START_RESULT"
-echo ""
-
-# Ждём немного
-echo "=== 4. Ожидание запуска (5 секунд) ==="
-sleep 5
-
-# Проверяем новый статус
-echo "=== 5. Новый статус event-logger ==="
-NEW_STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>/dev/null | grep -E 'status|uptime|restarts' | head -3 || echo 'event-logger не найден'")
-echo "$NEW_STATUS"
-echo ""
-
-# Проверяем логи
-echo "=== 6. Последние логи event-logger (вывод) ==="
-OUT_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 15 --nostream 2>&1 | tail -15 || tail -15 var/log/event-logger-out.log 2>/dev/null || echo 'Логи недоступны'")
-if [ -n "$OUT_LOG" ] && [ "$OUT_LOG" != "Логи недоступны" ]; then
-    echo "$OUT_LOG"
+# 3. Если уже запущен, перезапускаем
+if echo "$STATUS" | grep -q "online\|errored\|stopped"; then
+    echo "=== 3. Перезапуск существующего event-logger ==="
+    RESTART_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1")
+    echo "$RESTART_OUT"
 else
-    echo "Логи недоступны"
+    # 4. Запускаем event-logger
+    echo "=== 3. Запуск event-logger ==="
+    START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start event-logger.js --name reacthome-event-logger --log-date-format 'YYYY-MM-DD HH:mm:ss Z' --merge-logs 2>&1")
+    echo "$START_OUT"
 fi
 echo ""
 
-echo "=== 7. Последние логи event-logger (ошибки) ==="
-ERR_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --err --lines 10 --nostream 2>&1 | tail -10 || tail -10 var/log/event-logger-error.log 2>/dev/null || echo 'Логи ошибок недоступны'")
-if [ -n "$ERR_LOG" ] && [ "$ERR_LOG" != "Логи ошибок недоступны" ]; then
-    echo "$ERR_LOG"
+# 5. Сохраняем конфигурацию PM2
+echo "=== 4. Сохранение конфигурации PM2 ==="
+SAVE_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 save 2>&1")
+echo "$SAVE_OUT"
+echo ""
+
+# 6. Проверяем статус
+echo "=== 5. Статус event-logger ==="
+FINAL_STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status | grep event-logger || echo 'NOT_FOUND'")
+echo "$FINAL_STATUS"
+echo ""
+
+# 7. Показываем логи (первые 20 строк)
+echo "=== 6. Логи event-logger (последние 20 строк) ==="
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+if [ -n "$LOGS" ]; then
+    echo "$LOGS"
 else
-    echo "✅ Нет ошибок (или логи недоступны)"
+    echo "⚠️  Логи недоступны (возможно, процесс только что запустился)"
 fi
 echo ""
 
 rm -f "$TMP_EXPECT"
 
 echo "=========================================="
-echo "✅ Проверка завершена"
+echo "✅ Event-logger запущен"
 echo "=========================================="
+echo ""
+echo "Следующие шаги:"
+echo "1. Проверьте логи: pm2 logs reacthome-event-logger --lines 50"
+echo "2. Проверьте подключение к WebSocket"
+echo "3. Проверьте отправку событий в OpenSearch"

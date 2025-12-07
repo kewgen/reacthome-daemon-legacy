@@ -1,10 +1,9 @@
 #!/bin/bash
-# Скрипт для диагностики WebSocket подключения на Raspberry Pi
+# Диагностика проблем WebSocket на Raspberry Pi
 # Использование: ./scripts/system/diagnose-websocket-on-pi.sh
 
 set -e
 
-# Загружаем переменные из .env
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 if [ -f "$PROJECT_ROOT/.env" ]; then
@@ -18,10 +17,10 @@ PROJECT_DIR="/home/pi/reacthome-daemon"
 
 if [ -z "$PASS" ]; then
     echo "❌ Ошибка: переменная REACTHOME_PI_PASS не установлена"
+    echo "   Установите в .env файле: REACTHOME_PI_PASS='ваш_пароль'"
     exit 1
 fi
 
-# Создаём временный expect скрипт
 TMP_EXPECT=$(mktemp)
 cat > "$TMP_EXPECT" << 'EXPECT_EOF'
 #!/usr/bin/expect -f
@@ -48,90 +47,143 @@ run_on_pi() {
 }
 
 echo "=========================================="
-echo "Диагностика WebSocket подключения"
+echo "🔍 Диагностика WebSocket на Raspberry Pi"
 echo "=========================================="
+echo "Хост: ${USER}@${HOST}"
+echo "Проект: ${PROJECT_DIR}"
 echo ""
 
-# 1. Проверка порта
-echo "=== 1. Проверка порта 3000 ==="
-PORT_CHECK=$(run_on_pi "netstat -tuln 2>/dev/null | grep ':3000' || ss -tuln 2>/dev/null | grep ':3000' || echo 'Порт 3000 не найден'")
-echo "$PORT_CHECK"
-echo ""
-
-# 2. Проверка статуса демона
-echo "=== 2. Статус демона ==="
-DAEMON_STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe daemon 2>/dev/null | grep -E 'status|uptime|pid' | head -3")
-echo "$DAEMON_STATUS"
-echo ""
-
-# 3. Проверка логов демона на WebSocket
-echo "=== 3. Логи демона (WebSocket) ==="
-WS_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 50 --nostream 2>&1 | grep -iE 'websocket|3000|server|start' | tail -10 || echo 'Логи не найдены'")
-if [ -n "$WS_LOG" ] && [ "$WS_LOG" != "Логи не найдены" ]; then
-    echo "$WS_LOG"
+# 1. Проверка доступности хоста
+echo "=== 1. Проверка доступности хоста ==="
+if ping -c 1 -W 2 "${HOST}" >/dev/null 2>&1; then
+    echo "✅ Хост доступен"
 else
-    echo "Нет упоминаний WebSocket в логах"
+    echo "❌ Хост недоступен"
+    rm -f "$TMP_EXPECT"
+    exit 1
 fi
 echo ""
 
-# 4. Проверка ошибок демона
-echo "=== 4. Ошибки демона ==="
-DAEMON_ERR=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --err --lines 20 --nostream 2>&1 | tail -10 || echo 'Логи ошибок не найдены'")
-if [ -n "$DAEMON_ERR" ] && [ "$DAEMON_ERR" != "Логи ошибок не найдены" ]; then
-    echo "$DAEMON_ERR"
+# 2. Проверка порта 3000
+echo "=== 2. Проверка порта 3000 ==="
+PORT_CHECK=$(run_on_pi "netstat -tuln 2>&1 | grep ':3000' || ss -tuln 2>&1 | grep ':3000' || lsof -i :3000 2>&1 | head -5")
+if [ -n "$PORT_CHECK" ]; then
+    echo "✅ Порт 3000 открыт:"
+    echo "$PORT_CHECK"
 else
-    echo "✅ Нет ошибок (или логи недоступны)"
+    echo "❌ Порт 3000 не открыт или не слушается"
 fi
 echo ""
 
-# 5. Проверка конфигурации event-logger
-echo "=== 5. Конфигурация event-logger ==="
-EVENT_LOGGER_ENV=$(run_on_pi "cd $PROJECT_DIR && cat .env 2>/dev/null | grep -E 'DAEMON_WS_URL|OPENSEARCH' | head -5 || echo 'Переменные не найдены'")
-echo "$EVENT_LOGGER_ENV"
+# 3. Статус PM2 процессов
+echo "=== 3. Статус PM2 процессов ==="
+PM2_STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 list 2>&1")
+echo "$PM2_STATUS"
 echo ""
 
-# 6. Проверка ecosystem.config.js
-echo "=== 6. Конфигурация PM2 (ecosystem.config.js) ==="
-ECOSYSTEM_WS=$(run_on_pi "cd $PROJECT_DIR && cat ecosystem.config.js 2>/dev/null | grep -A 2 'DAEMON_WS_URL' | head -3 || echo 'Конфигурация не найдена'")
-echo "$ECOSYSTEM_WS"
+# 4. Проверка демона
+echo "=== 4. Детальная информация о демоне ==="
+DAEMON_INFO=$(run_on_pi "cd $PROJECT_DIR && pm2 describe daemon 2>&1")
+echo "$DAEMON_INFO"
 echo ""
 
-# 7. Тест подключения через Node.js
-echo "=== 7. Тест WebSocket подключения ==="
-WS_TEST=$(run_on_pi "cd $PROJECT_DIR && node -e \"
+# 5. Проверка файла server.js
+echo "=== 5. Проверка файла server.js ==="
+FILE_INFO=$(run_on_pi "cd $PROJECT_DIR && ls -lh src/websocket/server.js 2>&1 && echo '---' && head -20 src/websocket/server.js 2>&1")
+echo "$FILE_INFO"
+echo ""
+
+# 6. Проверка логирования в server.js
+echo "=== 6. Проверка логирования в server.js ==="
+LOGGING_CHECK=$(run_on_pi "cd $PROJECT_DIR && grep -c 'WEBSOCKET.*DEBUG' src/websocket/server.js 2>&1 || echo '0'")
+echo "Найдено строк с DEBUG логированием: $LOGGING_CHECK"
+if [ "$LOGGING_CHECK" = "0" ]; then
+    echo "⚠️  Расширенное логирование не настроено"
+    echo "   Запустите: ./scripts/system/setup-websocket-logging-on-pi.sh"
+fi
+echo ""
+
+# 7. Последние логи WebSocket
+echo "=== 7. Последние логи WebSocket (50 строк) ==="
+WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 200 --nostream 2>&1 | grep -iE 'websocket|WEBSOCKET' | tail -50")
+if [ -n "$WS_LOGS" ]; then
+    echo "$WS_LOGS"
+else
+    echo "⚠️  Нет логов WebSocket"
+fi
+echo ""
+
+# 8. Ошибки в логах
+echo "=== 8. Ошибки в логах демона (последние 20) ==="
+ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 200 --nostream --err 2>&1 | tail -20")
+if [ -n "$ERRORS" ]; then
+    echo "$ERRORS"
+else
+    echo "✅ Ошибок не найдено"
+fi
+echo ""
+
+# 9. Проверка версии Node.js
+echo "=== 9. Версия Node.js ==="
+NODE_VERSION=$(run_on_pi "node --version 2>&1")
+echo "Node.js: $NODE_VERSION"
+echo ""
+
+# 10. Проверка версии ws
+echo "=== 10. Версия библиотеки ws ==="
+WS_VERSION=$(run_on_pi "cd $PROJECT_DIR && npm list ws 2>&1 | head -3")
+echo "$WS_VERSION"
+echo ""
+
+# 11. Проверка подключений к порту 3000
+echo "=== 11. Активные подключения к порту 3000 ==="
+CONNECTIONS=$(run_on_pi "netstat -an 2>&1 | grep ':3000' | grep ESTABLISHED || ss -an 2>&1 | grep ':3000' | grep ESTAB || echo 'Нет активных подключений'")
+echo "$CONNECTIONS"
+echo ""
+
+# 12. Тест подключения с Pi
+echo "=== 12. Тест локального подключения на Pi ==="
+LOCAL_TEST=$(run_on_pi "cd $PROJECT_DIR && timeout 3 node -e \"
 const WebSocket = require('ws');
 const ws = new WebSocket('ws://localhost:3000');
 ws.on('open', () => {
-  console.log('✅ WebSocket подключение успешно');
+  console.log('✅ Локальное подключение успешно');
   ws.close();
   process.exit(0);
 });
 ws.on('error', (err) => {
-  console.log('❌ WebSocket ошибка:', err.message);
+  console.log('❌ Ошибка локального подключения:', err.message);
   process.exit(1);
 });
 setTimeout(() => {
-  console.log('⏱️  Таймаут подключения');
+  console.log('❌ Таймаут подключения');
   process.exit(1);
-}, 5000);
-\" 2>&1")
-echo "$WS_TEST"
+}, 2000);
+\" 2>&1" || echo "Тест не выполнен")
+echo "$LOCAL_TEST"
 echo ""
 
-# 8. Проверка процесса демона
-echo "=== 8. Процесс демона ==="
-DAEMON_PROC=$(run_on_pi "ps aux | grep -E 'daemon\.js|node.*daemon' | grep -v grep | head -2 || echo 'Процесс не найден'")
-echo "$DAEMON_PROC"
+# 13. Проверка event-logger (если есть)
+echo "=== 13. Проверка event-logger (если запущен) ==="
+EVENT_LOGGER=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | head -10 || echo 'event-logger не запущен'")
+echo "$EVENT_LOGGER"
 echo ""
 
-# 9. Проверка сетевых соединений демона
-echo "=== 9. Сетевые соединения демона ==="
-DAEMON_NET=$(run_on_pi "netstat -tulnp 2>/dev/null | grep ':3000' || ss -tulnp 2>/dev/null | grep ':3000' || echo 'Соединения не найдены'")
-echo "$DAEMON_NET"
-echo ""
+if echo "$EVENT_LOGGER" | grep -q "online"; then
+    echo "Логи event-logger (последние 20 строк):"
+    EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | tail -20")
+    echo "$EVENT_LOGGER_LOGS"
+    echo ""
+fi
 
 rm -f "$TMP_EXPECT"
 
 echo "=========================================="
 echo "✅ Диагностика завершена"
 echo "=========================================="
+echo ""
+echo "Рекомендации:"
+echo "1. Если порт 3000 не открыт - проверьте, запущен ли демон"
+echo "2. Если нет логов WebSocket - настройте логирование: ./scripts/system/setup-websocket-logging-on-pi.sh"
+echo "3. Если есть ошибки - проверьте логи: ssh ${USER}@${HOST} 'cd ${PROJECT_DIR} && pm2 logs daemon --lines 100'"
+echo "4. Запустите тест: node tests/websocket/test-websocket-connection.js ws://${HOST}:3000"
