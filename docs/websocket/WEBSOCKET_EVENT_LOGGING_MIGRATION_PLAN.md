@@ -2611,11 +2611,13 @@ ls -la scripts/check-logging-continuity.js
   - Валидация входных данных
 - ✅ **`src/controllers/device.js`** - обёртка `handleData` в `contextStore.run()` (строки 144-156)
 - ✅ **`src/controllers/service.js` (CronJob)** - исправлен `ACTION_SCHEDULE_START` для сохранения контекста (строки 2449-2457)
-- ❌ **`src/controllers/service.js` (setTimeout)** - **НЕ РЕАЛИЗОВАНО** для `ACTION_SCRIPT_RUN` (строки 3153-3168)
+- ✅ **`src/controllers/service.js` (setTimeout)** - **РЕАЛИЗОВАНО** для `ACTION_SCRIPT_RUN` (2025-12-07)
 
-### Критическое исправление: setTimeout в ACTION_SCRIPT_RUN
+### Критическое исправление: setTimeout в ACTION_SCRIPT_RUN ✅
 
-**Проблема:** В `pi-changes/src/controllers/service.js` не реализовано исправление для `ACTION_SCRIPT_RUN` с `setTimeout`. Без этого исправления контекст теряется для скриптов с задержкой.
+**Статус:** ✅ **ИСПРАВЛЕНО** (2025-12-07)
+
+**Проблема:** В `src/controllers/service.js` не было реализовано исправление для `ACTION_SCRIPT_RUN` с `setTimeout`. Без этого исправления контекст терялся для скриптов с задержкой.
 
 **Текущий код (в `src/controllers/service.js:3153-3168`):**
 ```javascript
@@ -2674,6 +2676,12 @@ case ACTION_SCRIPT_RUN: {
 ```
 
 **Приоритет:** 🔴 **КРИТИЧЕСКИЙ** - без этого исправления контекст будет теряться для скриптов с задержкой.
+
+**Выполнено:** ✅ **2025-12-07**
+- Исправление применено на Raspberry Pi
+- Коммит создан с подробным описанием
+- Изменения отправлены в ветку `websocket-logger`
+- Требуется перезапуск демона для применения изменений
 
 ### План применения изменений
 
