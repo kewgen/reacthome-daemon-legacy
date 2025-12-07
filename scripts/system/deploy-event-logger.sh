@@ -168,6 +168,24 @@ run_on_pi "cd $PROJECT_DIR && test -f src/assist/lang/ru.js && echo '✅ src/ass
 echo ""
 
 echo "=========================================="
+echo "Шаг 2.5: Переключение ветки на websocket-logger"
+echo "=========================================="
+echo ""
+echo "🔴 КРИТИЧЕСКИ ВАЖНО: Переключаю ветку на websocket-logger..."
+BRANCH_SWITCH=$(run_on_pi "cd $PROJECT_DIR && if git show-ref --verify --quiet refs/heads/websocket-logger; then git checkout websocket-logger 2>&1; else git checkout -b websocket-logger 2>&1; fi")
+echo "$BRANCH_SWITCH"
+echo ""
+
+FINAL_BRANCH=$(run_on_pi "cd $PROJECT_DIR && git branch --show-current")
+if echo "$FINAL_BRANCH" | grep -q "websocket-logger"; then
+    echo "✅ Ветка websocket-logger активна"
+else
+    echo "⚠️  ВНИМАНИЕ: Ветка не websocket-logger, текущая: $FINAL_BRANCH"
+    echo "   Файлы находятся в неправильной ветке!"
+fi
+echo ""
+
+echo "=========================================="
 echo "Шаг 3: Установка зависимостей"
 echo "=========================================="
 echo ""
