@@ -77,7 +77,8 @@ const SCRIPT_EXECUTION_WINDOW_MS = 5000; // Окно 5 секунд для со�
 
 // Константы для TTL очистки кэшей (зачем: предотвращение утечки памяти)
 const TRACE_CACHE_TTL_MS = 3600000; // 1 час - traceIdCache
-const DEVICE_STATE_MAX_SIZE = 1000; // Максимальный размер deviceState кэша
+const DEVICE_STATE_MAX_SIZE = 500; // Максимальный размер deviceState кэша (уменьшено для экономии памяти)
+const DEVICE_STATE_TTL_MS = 3600000; // 1 час - TTL для deviceState (зачем: удаление неактивных устройств)
 const ACTUATOR_CACHE_TTL_MS = 86400000; // 24 часа - actuatorStateCache и channelStateCache
 
 // Логирование
@@ -714,23 +715,49 @@ setInterval(() => {
     }
   }
   
-  // Очистка deviceState при превышении размера (зачем: ограничение роста кэша состояний устройств)
-  if (deviceState.size > DEVICE_STATE_MAX_SIZE) {
-    // Удаляем 10% самых старых записей (LRU-стратегия)
-    const entries = Array.from(deviceState.entries());
-    const toDelete = Math.floor(deviceState.size * 0.1);
-    for (let i = 0; i < toDelete; i++) {
-      deviceState.delete(entries[i][0]);
+  // Очистка deviceState по TTL (зачем: удаление неактивных устройств для предотвращения утечки памяти)
+  const deviceStateThreshold = now - DEVICE_STATE_TTL_MS;
+  for (const [id, cachedState] of deviceState.entries()) {
+    // Проверяем timestamp последнего обновления (если есть)
+    const lastUpdate = cachedState._lastUpdate || 0;
+    if (lastUpdate > 0 && lastUpdate < deviceStateThreshold) {
+      deviceState.delete(id);
       cleanedCount.deviceStates++;
     }
   }
   
-  // Логирование результатов очистки
-  const totalCleaned = Object.values(cleanedCount).reduce((sum, count) => sum + count, 0);
-  if (totalCleaned > 0) {
-    log(`🧹 Очистка кэшей: recentEvents=${cleanedCount.recentEvents}, scripts=${cleanedCount.scripts}, traces=${cleanedCount.traces}, actuators=${cleanedCount.actuators}, channels=${cleanedCount.channels}, deviceStates=${cleanedCount.deviceStates}`);
+  // Очистка deviceState при превышении размера (зачем: ограничение роста кэша состояний устройств)
+  if (deviceState.size > DEVICE_STATE_MAX_SIZE) {
+    // Более агрессивная очистка: удаляем до достижения 80% от лимита
+    const targetSize = Math.floor(DEVICE_STATE_MAX_SIZE * 0.8);
+    const toDelete = deviceState.size - targetSize;
+    
+    if (toDelete > 0) {
+      const entries = Array.from(deviceState.entries());
+      // Сортируем по времени последнего обновления
+      entries.sort((a, b) => {
+        const timeA = a[1]._lastUpdate || 0;
+        const timeB = b[1]._lastUpdate || 0;
+        return timeA - timeB; // Старые первыми
+      });
+      
+      // Удаляем самые старые записи до достижения целевого размера
+      for (let i = 0; i < toDelete && i < entries.length; i++) {
+        deviceState.delete(entries[i][0]);
+        cleanedCount.deviceStates++;
+      }
+    }
   }
-}, 10000); // Очистка каждые 10 секунд
+  
+  // Логирование результатов очистки и размеров кэшей
+  const totalCleaned = Object.values(cleanedCount).reduce((sum, count) => sum + count, 0);
+  if (totalCleaned > 0 || deviceState.size > DEVICE_STATE_MAX_SIZE * 0.8) {
+    // Логируем если что-то очистили или deviceState близок к лимиту
+    const memUsage = process.memoryUsage();
+    const memMB = Math.round(memUsage.heapUsed / 1024 / 1024);
+    log(`🧹 Очистка кэшей: recentEvents=${cleanedCount.recentEvents}, scripts=${cleanedCount.scripts}, traces=${cleanedCount.traces}, actuators=${cleanedCount.actuators}, channels=${cleanedCount.channels}, deviceStates=${cleanedCount.deviceStates} | Размеры: deviceState=${deviceState.size}/${DEVICE_STATE_MAX_SIZE}, traceId=${traceIdCache.size}, actuator=${actuatorStateCache.size}, channel=${channelStateCache.size} | Память: ${memMB}MB`);
+  }
+}, 5000); // Очистка каждые 5 секунд (увеличена частота для более агрессивной очистки)
 
 // Обработка ACTION_SET сообщений
 const handleActionSet = (message) => {
@@ -744,9 +771,31 @@ const handleActionSet = (message) => {
     // Получаем старое состояние
     const oldState = deviceState.get(id) || {};
     
-    // Обновляем состояние
+    // Обновляем состояние, но храним только необходимые поля для экономии памяти
+    // Зачем: храним только поля, используемые для сравнения, а не весь объект состояния
+    const essentialFields = {};
+    // Копируем только нужные поля из oldState
+    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
+                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
+                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+    for (const field of fieldsToKeep) {
+      if (oldState[field] !== undefined) {
+        essentialFields[field] = oldState[field];
+      }
+    }
+    // Добавляем новые поля из payload
+    for (const field of fieldsToKeep) {
+      if (payload[field] !== undefined) {
+        essentialFields[field] = payload[field];
+      }
+    }
+    // Сохраняем timestamp последнего обновления для TTL очистки
+    essentialFields._lastUpdate = Date.now();
+    
+    deviceState.set(id, essentialFields);
+    
+    // Используем полный объект только для текущей обработки
     const newState = { ...oldState, ...payload };
-    deviceState.set(id, newState);
     
     // ❌ НЕ ПИШЕМ в state! Event-logger только читает, не модифицирует БД
     // state.set(id, newState);
@@ -1279,8 +1328,18 @@ const connect = () => {
             // Зачем: при GET payload содержит полное состояние устройства, используем его как есть
             const { id, payload } = message;
             if (id && payload && typeof payload === 'object') {
-              // Зачем: при начальной загрузке payload - это полное состояние, не мержим с oldState
-              deviceState.set(id, payload);
+              // Зачем: при начальной загрузке payload - это полное состояние, но храним только нужные поля
+              const essentialFields = {};
+              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
+                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
+                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+              for (const field of fieldsToKeep) {
+                if (payload[field] !== undefined) {
+                  essentialFields[field] = payload[field];
+                }
+              }
+              essentialFields._lastUpdate = Date.now();
+              deviceState.set(id, essentialFields);
               // ❌ НЕ ПИШЕМ в state! Event-logger только читает
               // state.set(id, payload);
               
