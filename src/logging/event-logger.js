@@ -37,6 +37,8 @@ const DAEMON_WS_URL = process.env.DAEMON_WS_URL || 'ws://localhost:3000';
 const RECONNECT_DELAY = 5000; // 5 секунд
 const MAX_RECONNECT_ATTEMPTS = 10;
 const STATE_REQUEST_TIMEOUT = 30000; // 30 секунд
+const CONNECTION_TIMEOUT = 10000; // 10 секунд - таймаут подключения к WebSocket
+const MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB - максимальный размер сообщения (защита от DoS)
 const BUFFER_MAX_SIZE = 100; // Максимальный размер буфера событий
 
 // Константы для WebSocket сообщений (из src/init/constants.js и src/constants.js)
@@ -74,6 +76,22 @@ const RECENT_EVENT_WINDOW_MS = 2000; // Окно 2 секунды для свя�
 // Зачем: отслеживание запущенных скриптов и связывание их событий с событиями устройств
 const activeScriptsCache = new Map(); // scriptId -> { timestamp, trace_id, actionDevices: Set }
 const SCRIPT_EXECUTION_WINDOW_MS = 5000; // Окно 5 секунд для событий скрипта
+
+// 5. Кэш выполнения скриптов для генерации синтетических событий executed
+// Зачем: отслеживание запущенных скриптов и генерация синтетических событий когда устройства изменяются
+const scriptExecutionCache = new Map(); // scriptId -> {
+//   firstChangeTimestamp: number,    // Время первого изменения устройства
+//   trace_id: string,                 // trace_id для всей цепочки
+//   devicesChanged: Set<deviceId>,    // Устройства которые уже изменились
+//   syntheticEventSent: boolean,       // Было ли отправлено синтетическое событие
+//   targetDevices: Set<deviceId>       // Все целевые устройства скрипта
+// }
+const SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC = 10000; // 10 секунд (учитывая delay в скриптах)
+const SCRIPT_CACHE_CLEANUP_THRESHOLD_MS = 20000; // 20 секунд для очистки
+
+// 6. Обратный индекс deviceId -> Set<scriptId> для быстрого поиска скриптов
+// Зачем: оптимизация поиска скриптов содержащих устройство
+const deviceToScriptsIndex = new Map(); // deviceId -> Set<scriptId>
 
 // Константы для TTL очистки кэшей (зачем: предотвращение утечки памяти)
 const TRACE_CACHE_TTL_MS = 3600000; // 1 час - traceIdCache
@@ -410,6 +428,13 @@ const getScriptTargetDevices = (scriptId) => {
       targetDevices.add(actionObj.ref);
     }
     
+    // Зачем: для ACTION_ON/OFF/TOGGLE целевое устройство в payload.id
+    if (actionObj.payload && typeof actionObj.payload === 'object') {
+      if (actionObj.payload.id && typeof actionObj.payload.id === 'string') {
+        targetDevices.add(actionObj.payload.id);
+      }
+    }
+    
     // Зачем: для действий с site - добавляем все устройства в site
     if (Array.isArray(actionObj.site)) {
       for (const siteId of actionObj.site) {
@@ -428,6 +453,178 @@ const getScriptTargetDevices = (scriptId) => {
   }
   
   return targetDevices;
+};
+
+// Поиск скриптов содержащих устройство (с использованием обратного индекса)
+// Зачем: быстрое определение какие скрипты могут влиять на устройство
+const findScriptsContainingDevice = (deviceId) => {
+  return Array.from(deviceToScriptsIndex.get(deviceId) || []);
+};
+
+// Генерация синтетического события executed для скрипта
+// Зачем: создание события executed когда скрипт запустился (выведено из изменений устройств)
+const generateSyntheticScriptEvent = (scriptId, timestamp, trace_id) => {
+  const script = state.get(scriptId);
+  if (!script) return;
+  
+  // Получаем метаданные скрипта
+  const scriptFields = getDeviceFields(scriptId);
+  const scriptHuman = getHumanName(script);
+  const siteName = getSiteName(scriptId);
+  const projectName = getProjectName(scriptId);
+  
+  // Создаём синтетическое событие executed
+  const syntheticEvent = {
+    timestamp: timestamp,
+    id: scriptId,
+    device: {
+      type: 'SCRIPT',
+      human: scriptHuman,
+      name: scriptFields?.name ?? null,
+      code: scriptFields?.code ?? null,
+      title: scriptFields?.title ?? null
+    },
+    param: 'executed',
+    old: null,  // Не знаем предыдущее значение
+    new: true,  // Скрипт выполняется
+    trigger: {
+      type: 'script',
+      ref: scriptId,
+      id: scriptId,
+      human: scriptHuman,
+      session: null,
+      remote_ip: null
+    },
+    site: siteName,
+    project: projectName,
+    trace_id: trace_id,
+    extra: {
+      synthetic: true,              // Маркер: это синтетическое событие
+      inferred_from: 'device_changes', // Метод вывода
+      confidence: 'high',            // Уверенность (high/medium/low)
+      target_devices_count: script.action?.length || 0
+    }
+  };
+  
+  // Отправляем событие
+  sendEvent(syntheticEvent);
+  
+  log(`📋 [SYNTHETIC] Создано синтетическое событие executed для скрипта ${scriptId.slice(0,8)}..., trace_id=${trace_id.slice(0,8)}`);
+};
+
+// Обработка нового запуска скрипта
+// Зачем: создание trace_id и синтетического события когда скрипт только что запустился
+const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
+  // 1. Генерируем trace_id для цепочки
+  const trace_id = uuidv4();
+  
+  // 2. Получаем целевые устройства скрипта
+  const targetDevices = getScriptTargetDevices(scriptId);
+  
+  // 3. Сохраняем в кэш
+  scriptExecutionCache.set(scriptId, {
+    firstChangeTimestamp: timestamp,
+    trace_id: trace_id,
+    devicesChanged: new Set([deviceId]),
+    syntheticEventSent: false,
+    targetDevices: targetDevices
+  });
+  
+  // 4. Сохраняем trace_id для всех целевых устройств
+  for (const devId of targetDevices) {
+    traceIdCache.set(devId, trace_id);
+  }
+  
+  // 5. Генерируем синтетическое событие executed
+  generateSyntheticScriptEvent(scriptId, timestamp, trace_id);
+  
+  // 6. Отмечаем что синтетическое событие отправлено
+  const cached = scriptExecutionCache.get(scriptId);
+  if (cached) {
+    cached.syntheticEventSent = true;
+  }
+  
+  log(`📋 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} запущен (выведено), trace_id=${trace_id.slice(0,8)}, целевых устройств: ${targetDevices.size}`);
+};
+
+// Обработка продолжения работы скрипта
+// Зачем: отслеживание изменений устройств в рамках уже запущенного скрипта
+const handleContinuingScriptExecution = (scriptId, deviceId, cached) => {
+  // Добавляем устройство в список изменённых
+  cached.devicesChanged.add(deviceId);
+  
+  log(`⏳ [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} продолжает работу, устройство ${deviceId.slice(0,8)} изменено (${cached.devicesChanged.size}/${cached.targetDevices.size})`);
+  
+  // Проверяем, все ли целевые устройства изменились
+  if (cached.devicesChanged.size === cached.targetDevices.size) {
+    log(`✅ [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} завершил работу, все устройства изменены`);
+  }
+};
+
+// Проверка и генерация синтетических событий для скриптов
+// Зачем: определение запущенных скриптов по изменениям устройств и генерация синтетических событий
+const checkAndGenerateScriptEvent = (deviceId, timestamp) => {
+  const scripts = findScriptsContainingDevice(deviceId);
+  if (scripts.length === 0) return;
+  
+  for (const scriptId of scripts) {
+    const cached = scriptExecutionCache.get(scriptId);
+    const timeSinceLastChange = cached 
+      ? (timestamp - cached.firstChangeTimestamp) 
+      : Infinity;
+    
+    // Условие: НОВЫЙ ЗАПУСК скрипта
+    const isNewExecution = 
+      !cached ||                                    // Скрипт не в кэше
+      timeSinceLastChange > SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC;  // Прошло > 10 секунд
+    
+    if (isNewExecution) {
+      // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
+      handleNewScriptExecution(scriptId, deviceId, timestamp);
+    } else {
+      // ⏳ Продолжение работы скрипта
+      handleContinuingScriptExecution(scriptId, deviceId, cached);
+    }
+  }
+};
+
+// Построение обратного индекса device -> scripts при инициализации
+// Зачем: оптимизация поиска скриптов содержащих устройство
+const buildDeviceToScriptsIndex = () => {
+  log('🔨 Строим обратный индекс device -> scripts...');
+  
+  deviceToScriptsIndex.clear();
+  let scriptsCount = 0;
+  
+  // Проходим по всем объектам в state
+  // Зачем: state.state() возвращает объект со всеми устройствами
+  const stateObj = state.state();
+  const totalObjects = Object.keys(stateObj).length;
+  let objectsWithAction = 0;
+  
+  for (const [scriptId, obj] of Object.entries(stateObj)) {
+    if (!obj || typeof obj !== 'object') continue;
+    if (!Array.isArray(obj.action)) continue;
+    
+    objectsWithAction++;
+    const targetDevices = getScriptTargetDevices(scriptId);
+    if (targetDevices.size === 0) {
+      log(`⚠️ Скрипт ${scriptId.slice(0,8)}... имеет action, но целевых устройств не найдено`);
+      continue;
+    }
+    
+    scriptsCount++;
+    
+    // Добавляем в обратный индекс
+    for (const deviceId of targetDevices) {
+      if (!deviceToScriptsIndex.has(deviceId)) {
+        deviceToScriptsIndex.set(deviceId, new Set());
+      }
+      deviceToScriptsIndex.get(deviceId).add(scriptId);
+    }
+  }
+  
+  log(`✅ Обратный индекс построен: ${deviceToScriptsIndex.size} устройств в ${scriptsCount} скриптах (всего объектов: ${totalObjects}, с action: ${objectsWithAction})`);
 };
 
 // Анализ связей из БД для определения триггера
@@ -546,6 +743,24 @@ const generateTraceId = (id, context, param) => {
     return context.trace_id;
   }
   
+  // Зачем: проверяем scriptExecutionCache - если устройство уже связано со скриптом, используем его trace_id
+  const scriptCacheEntry = scriptExecutionCache.get(id);
+  if (scriptCacheEntry) {
+    const cachedTraceId = traceIdCache.get(id);
+    if (cachedTraceId) {
+      return cachedTraceId; // Используем trace_id из кэша скрипта
+    }
+  }
+  
+  // Проверяем все скрипты в scriptExecutionCache - может быть устройство в targetDevices
+  for (const [scriptId, cached] of scriptExecutionCache.entries()) {
+    if (cached.targetDevices && cached.targetDevices.has(id)) {
+      const cachedTraceId = cached.trace_id;
+      traceIdCache.set(id, cachedTraceId);
+      return cachedTraceId; // Используем trace_id скрипта
+    }
+  }
+  
   // Анализируем контекст из БД
   const dbContext = analyzeDeviceContext(id, now, param);
   
@@ -588,16 +803,16 @@ const generateTraceId = (id, context, param) => {
   if (triggerType !== 'unknown' && triggerRef) {
     // Ищем trace_id в кэше по ref
     if (traceIdCache.has(triggerRef)) {
-      // Нашли trace_id в кэше - используем его и сохраняем для текущего события
-      const traceId = traceIdCache.get(triggerRef);
-      traceIdCache.set(id, traceId);
+    // Нашли trace_id в кэше - используем его и сохраняем для текущего события
+    const traceId = traceIdCache.get(triggerRef);
+    traceIdCache.set(id, traceId);
       recentEventsCache.set(id, { timestamp: now, trace_id: traceId, type: triggerType });
-      return traceId;
-    }
-    
-    // Если trigger есть, но trace_id не найден в кэше - генерируем новый
-    const newTraceId = uuidv4();
-    traceIdCache.set(id, newTraceId);
+    return traceId;
+  }
+  
+  // Если trigger есть, но trace_id не найден в кэше - генерируем новый
+  const newTraceId = uuidv4();
+  traceIdCache.set(id, newTraceId);
     traceIdCache.set(triggerRef, newTraceId); // Сохраняем для trigger.ref
     recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: triggerType });
     return newTraceId;
@@ -683,6 +898,15 @@ setInterval(() => {
   for (const [scriptId, scriptInfo] of activeScriptsCache.entries()) {
     if (scriptInfo.timestamp < scriptExpiredThreshold) {
       activeScriptsCache.delete(scriptId);
+      cleanedCount.scripts++;
+    }
+  }
+  
+  // Очистка scriptExecutionCache (зачем: удаление завершённых скриптов для синтетических событий)
+  const scriptExecutionExpiredThreshold = now - SCRIPT_CACHE_CLEANUP_THRESHOLD_MS;
+  for (const [scriptId, cached] of scriptExecutionCache.entries()) {
+    if (cached.firstChangeTimestamp < scriptExecutionExpiredThreshold) {
+      scriptExecutionCache.delete(scriptId);
       cleanedCount.scripts++;
     }
   }
@@ -843,6 +1067,11 @@ const handleActionSet = (message) => {
     const cleanPayload = { ...payload };
     delete cleanPayload.timestamp;
     
+    // Зачем: проверяем и генерируем синтетические события для скриптов
+    // Делаем это ДО processEvent, чтобы синтетическое событие создалось первым
+    const timestamp = payload.timestamp || Date.now();
+    checkAndGenerateScriptEvent(id, timestamp);
+    
     // Обрабатываем событие (используем логику из event-log.js)
     processEvent(id, oldState, newState, context, cleanPayload, actuatorOffInfo);
     
@@ -963,7 +1192,12 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     const newValue = newState[param];
     
     // Проверка через типизированную систему фильтров
-    if (!filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorDevice)) {
+    const shouldLog = filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorDevice);
+    if (!shouldLog) {
+      // Зачем: временное логирование для отладки фильтров
+      if (id === '8828b19b-55b6-4f88-ac6b-20c41b02f1ad') {
+        log(`🚫 Событие отфильтровано: ${id.slice(0,8)} ${param}  ${oldValue}→${newValue}`);
+      }
       continue; // Фильтр отклонил событие
     }
     
@@ -1265,11 +1499,17 @@ const initStateFromWebSocket = (stateData) => {
     state.init(init);
     
     log(`State инициализирован: ${stateData.size} записей (sites: ${siteCount}, projects: ${projectCount})`);
+    
+    // Зачем: строим обратный индекс device -> scripts после инициализации state
+    buildDeviceToScriptsIndex();
   } catch (error) {
     logError('Ошибка инициализации state:', error.message, error.stack);
     throw error;
   }
 };
+
+// Таймаут подключения
+let connectionTimeoutId = null;
 
 // Подключение к WebSocket
 const connect = () => {
@@ -1282,8 +1522,28 @@ const connect = () => {
   
   ws = new WebSocket(DAEMON_WS_URL);
   
+  // Зачем: Таймаут подключения к WebSocket (10 секунд)
+  connectionTimeoutId = setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      logError(`Таймаут подключения к WebSocket после ${CONNECTION_TIMEOUT / 1000} секунд. Состояние: ${ws.readyState}`);
+      ws.terminate();
+      isConnected = false;
+      
+      // Переподключение
+      if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+        reconnectAttempts++;
+        console.log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
+        setTimeout(connect, RECONNECT_DELAY);
+      } else {
+        logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`);
+        process.exit(1);
+      }
+    }
+  }, CONNECTION_TIMEOUT);
+  
   ws.on('open', () => {
     console.log('WebSocket подключен', 'URL:', DAEMON_WS_URL, 'readyState:', ws.readyState);
+    clearTimeout(connectionTimeoutId);
     isConnected = true;
     reconnectAttempts = 0;
     stateRequested = false;
@@ -1296,7 +1556,14 @@ const connect = () => {
   
   ws.on('message', (data) => {
     try {
-      const message = JSON.parse(data.toString());
+      // Зачем: Безопасный парсинг JSON с ограничением размера для предотвращения DoS атак
+      const dataString = data.toString();
+      if (dataString.length > MAX_MESSAGE_SIZE) {
+        logError(`WebSocket message too large (${dataString.length} bytes), ignoring`);
+        return;
+      }
+      
+      const message = JSON.parse(dataString);
       
       // Логируем все сообщения для диагностики
       console.log('[DEBUG] Получено сообщение типа:', message.type, 'ID:', message.id || 'N/A', '_context:', message._context ? 'present' : 'absent');
@@ -1390,11 +1657,13 @@ const connect = () => {
   
   ws.on('error', (error) => {
     logError('WebSocket ошибка:', error.message || error.toString() || JSON.stringify(error), error);
+    clearTimeout(connectionTimeoutId);
     isConnected = false;
   });
   
   ws.on("close", (code, reason) => {
     console.log("WebSocket соединение закрыто, код:", code, "причина:", reason ? reason.toString() : "нет");
+    clearTimeout(connectionTimeoutId);
     isConnected = false;
     stateRequested = false;
     isInitialStateReceived = false;
