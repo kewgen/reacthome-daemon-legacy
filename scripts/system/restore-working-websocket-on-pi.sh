@@ -100,7 +100,7 @@ if echo "$EVENT_LOGGER" | grep -q "NOT_FOUND"; then
     echo ""
     echo "Для запуска event-logger выполните:"
     echo "  cd $PROJECT_DIR"
-    echo "  pm2 start event-logger.js --name reacthome-event-logger"
+    echo "  pm2 start event-logger.js --name events"
 else
     echo "✅ Event-logger запущен"
 fi
@@ -116,3 +116,4 @@ echo "Следующие шаги:"
 echo "1. Проверьте логи: pm2 logs daemon --lines 50"
 echo "2. Запустите event-logger, если не запущен"
 echo "3. Проверьте подключение event-logger к WebSocket"
+

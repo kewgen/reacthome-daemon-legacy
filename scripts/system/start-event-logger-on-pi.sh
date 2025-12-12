@@ -72,12 +72,12 @@ echo ""
 # 3. Если уже запущен, перезапускаем
 if echo "$STATUS" | grep -q "online\|errored\|stopped"; then
     echo "=== 3. Перезапуск существующего event-logger ==="
-    RESTART_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1")
+    RESTART_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1")
     echo "$RESTART_OUT"
 else
     # 4. Запускаем event-logger
     echo "=== 3. Запуск event-logger ==="
-    START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start event-logger.js --name reacthome-event-logger --log-date-format 'YYYY-MM-DD HH:mm:ss Z' --merge-logs 2>&1")
+    START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start event-logger.js --name events --log-date-format 'YYYY-MM-DD HH:mm:ss Z' --merge-logs 2>&1")
     echo "$START_OUT"
 fi
 echo ""
@@ -96,7 +96,7 @@ echo ""
 
 # 7. Показываем логи (первые 20 строк)
 echo "=== 6. Логи event-logger (последние 20 строк) ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 20 --nostream 2>&1 | tail -20")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
 else
@@ -111,6 +111,6 @@ echo "✅ Event-logger запущен"
 echo "=========================================="
 echo ""
 echo "Следующие шаги:"
-echo "1. Проверьте логи: pm2 logs reacthome-event-logger --lines 50"
+echo "1. Проверьте логи: pm2 logs events --lines 50"
 echo "2. Проверьте подключение к WebSocket"
 echo "3. Проверьте отправку событий в OpenSearch"

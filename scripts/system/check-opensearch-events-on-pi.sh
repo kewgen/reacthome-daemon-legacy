@@ -51,25 +51,25 @@ echo ""
 
 # 1. Проверяем статус event-logger
 echo "=== 1. Статус event-logger ==="
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | grep -E 'status|uptime|restarts' | head -3")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1 | grep -E 'status|uptime|restarts' | head -3")
 echo "$STATUS"
 echo ""
 
 # 2. Проверяем логи event-logger на успешную отправку в OpenSearch
 echo "=== 2. Логи отправки в OpenSearch (последние 30) ==="
-OPENSEARCH_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 100 --nostream 2>&1 | grep -iE 'opensearch|отправк|success|успешн|bulk' | tail -30")
+OPENSEARCH_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 100 --nostream 2>&1 | grep -iE 'opensearch|success|bulk' | tail -30")
 if [ -n "$OPENSEARCH_LOGS" ]; then
     echo "$OPENSEARCH_LOGS"
     
     # Проверяем успешные отправки
-    SUCCESS_COUNT=$(echo "$OPENSEARCH_LOGS" | grep -iE 'успешн|success|bulk.*ok' | wc -l | tr -d ' ')
+    SUCCESS_COUNT=$(echo "$OPENSEARCH_LOGS" | grep -iE 'success|bulk.*ok' | wc -l | tr -d ' ')
     if [ "$SUCCESS_COUNT" -gt 0 ]; then
         echo ""
         echo "✅ Найдено успешных отправок: $SUCCESS_COUNT"
     fi
     
     # Проверяем ошибки
-    ERROR_COUNT=$(echo "$OPENSEARCH_LOGS" | grep -iE 'ошибк|error|failed|timeout' | wc -l | tr -d ' ')
+    ERROR_COUNT=$(echo "$OPENSEARCH_LOGS" | grep -iE 'error|failed|timeout' | wc -l | tr -d ' ')
     if [ "$ERROR_COUNT" -gt 0 ]; then
         echo "⚠️  Найдено ошибок: $ERROR_COUNT"
     fi
@@ -80,11 +80,11 @@ echo ""
 
 # 3. Проверяем WebSocket соединение
 echo "=== 3. Статус WebSocket соединения ==="
-WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | grep -iE 'websocket|подключен|connected|open' | tail -10")
+WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | grep -iE 'websocket|connected|open' | tail -10")
 if [ -n "$WS_LOGS" ]; then
     echo "$WS_LOGS"
     
-    if echo "$WS_LOGS" | grep -qiE "подключен|connected|open"; then
+    if echo "$WS_LOGS" | grep -qiE "connected|open"; then
         echo ""
         echo "✅ WebSocket подключен"
     else
@@ -98,11 +98,11 @@ echo ""
 
 # 4. Проверяем обработку событий
 echo "=== 4. Обработка событий (последние 20) ==="
-EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 100 --nostream 2>&1 | grep -iE 'событи|event|ACTION_SET|обработк' | tail -20")
+EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 100 --nostream 2>&1 | grep -iE 'event|ACTION_SET|buffer|буфер|событие' | tail -20")
 if [ -n "$EVENT_LOGS" ]; then
     echo "$EVENT_LOGS"
     
-    EVENT_COUNT=$(echo "$EVENT_LOGS" | grep -iE 'событи|event' | wc -l | tr -d ' ')
+    EVENT_COUNT=$(echo "$EVENT_LOGS" | grep -iE 'event|buffer|буфер|событие' | wc -l | tr -d ' ')
     if [ "$EVENT_COUNT" -gt 0 ]; then
         echo ""
         echo "✅ Найдено событий в логах: $EVENT_COUNT"

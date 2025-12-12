@@ -47,7 +47,7 @@ echo "=========================================="
 echo "1. Статус перед остановкой"
 echo "=========================================="
 echo ""
-run_on_pi "cd $PROJECT_DIR && pm2 list | grep -E 'event-logger|reacthome-event-logger' || echo 'Процесс не найден'"
+run_on_pi "cd $PROJECT_DIR && pm2 list | grep -E 'events|event-logger' || echo 'Процесс не найден'"
 echo ""
 
 echo "=========================================="
@@ -55,8 +55,8 @@ echo "2. Остановка event-logger"
 echo "=========================================="
 echo ""
 
-# Пробуем разные варианты имени процесса
-run_on_pi "cd $PROJECT_DIR && pm2 stop reacthome-event-logger 2>&1 || pm2 stop event-logger 2>&1 || echo 'Процесс не найден'"
+# Останавливаем процесс events
+run_on_pi "cd $PROJECT_DIR && pm2 stop events 2>&1 || echo 'Процесс не найден'"
 echo ""
 
 sleep 2
@@ -75,7 +75,7 @@ echo ""
 read -p "Удалить процесс из PM2? (y/N): " -n 1 -r
 echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
-    run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1 || pm2 delete event-logger 2>&1 || echo 'Процесс не найден'"
+    run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1 || echo 'Процесс не найден'"
     echo ""
     echo "Статус после удаления:"
     run_on_pi "cd $PROJECT_DIR && pm2 list"
@@ -88,5 +88,6 @@ echo "=========================================="
 echo "✅ Остановка завершена"
 echo "=========================================="
 echo ""
+
 
 

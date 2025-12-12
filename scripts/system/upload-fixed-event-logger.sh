@@ -44,12 +44,12 @@ echo "📤 Загрузка исправленного event-logger.js на Rasp
 echo "✅ Файл загружен"
 echo ""
 echo "🔄 Перезапуск event-logger на Pi..."
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
 sleep 1
-run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events 2>&1" | head -5
 echo ""
 sleep 4
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
 echo "Статус: $STATUS"
 if echo "$STATUS" | grep -q "online"; then
     echo ""
@@ -57,3 +57,4 @@ if echo "$STATUS" | grep -q "online"; then
 fi
 
 rm -f "$TMP_EXPECT"
+

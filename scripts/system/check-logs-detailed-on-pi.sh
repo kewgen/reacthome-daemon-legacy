@@ -61,7 +61,7 @@ echo "=========================================="
 echo "3. Последние 100 строк логов event-logger"
 echo "=========================================="
 echo ""
-run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 100 --nostream 2>&1 | tail -105"
+run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 100 --nostream 2>&1 | tail -105"
 echo ""
 
 echo "=========================================="
@@ -88,8 +88,8 @@ echo "=========================================="
 echo "6. Ошибки event-logger"
 echo "=========================================="
 echo ""
-WS_ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 1000 --nostream 2>&1 | grep -ciE 'WebSocket|ERROR'")
-OPENSEARCH_ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 1000 --nostream 2>&1 | grep -ciE 'opensearch.*error|EAI_AGAIN|ETIMEDOUT'")
+WS_ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 1000 --nostream 2>&1 | grep -ciE 'WebSocket|ERROR'")
+OPENSEARCH_ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 1000 --nostream 2>&1 | grep -ciE 'opensearch.*error|EAI_AGAIN|ETIMEDOUT'")
 
 echo "WebSocket ошибок: $WS_ERRORS"
 echo "OpenSearch ошибок: $OPENSEARCH_ERRORS"
@@ -143,5 +143,6 @@ echo "=========================================="
 echo "✅ Проверка завершена"
 echo "=========================================="
 echo ""
+
 
 

@@ -81,7 +81,7 @@ echo ""
 
 # Полностью удаляем процесс и перезапускаем
 echo "=== 3. Полное удаление процесса ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
 run_on_pi "cd $PROJECT_DIR && pm2 save 2>&1" > /dev/null
 echo "✅ Процесс удалён"
 echo ""
@@ -91,7 +91,7 @@ sleep 2
 
 # Запускаем заново
 echo "=== 4. Запуск event-logger с обновлённым конфигом ==="
-run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger --update-env 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events --update-env 2>&1" | head -5
 echo ""
 
 # Сохраняем конфигурацию PM2
@@ -101,7 +101,7 @@ echo ""
 
 # Проверяем переменные окружения
 echo "=== 5. Проверка переменных окружения ==="
-ENV_CHECK=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | grep -A 20 'env:' | head -25")
+ENV_CHECK=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1 | grep -A 20 'env:' | head -25")
 if [ -n "$ENV_CHECK" ]; then
     echo "$ENV_CHECK"
     

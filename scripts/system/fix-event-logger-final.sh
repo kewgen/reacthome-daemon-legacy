@@ -117,19 +117,19 @@ echo ""
 
 # 5. Перезапускаем event-logger
 echo "=== 5. Перезапуск event-logger ==="
-run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1" | head -5
 echo ""
 
 # 6. Ждём и проверяем статус
 echo "=== 6. Проверка статуса (ожидание 5 секунд) ==="
 sleep 5
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
 echo "$STATUS"
 echo ""
 
 # 7. Проверяем логи
 echo "=== 7. Последние логи event-logger ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 10 --nostream 2>&1 | tail -10")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 10 --nostream 2>&1 | tail -10")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
 else
@@ -152,5 +152,6 @@ else
     echo "⚠️  Event-logger всё ещё не запущен"
     echo "=========================================="
     echo ""
-    echo "Проверьте логи: ssh $USER@$HOST 'cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50'"
+    echo "Проверьте логи: ssh $USER@$HOST 'cd $PROJECT_DIR && pm2 logs events --lines 50'"
 fi
+

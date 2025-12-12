@@ -186,13 +186,13 @@ echo ""
 
 # 4. Перезапускаем event-logger
 echo "=== 4. Перезапуск event-logger ==="
-run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1" | head -5
 echo ""
 
 # 5. Проверяем статус
 echo "=== 5. Статус event-logger ==="
 sleep 2
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
 echo "$STATUS"
 echo ""
 
@@ -201,3 +201,4 @@ rm -f "$TMP_EXPECT"
 echo "=========================================="
 echo "✅ Исправление завершено"
 echo "=========================================="
+

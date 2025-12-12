@@ -223,3 +223,4 @@ echo "Следующие шаги:"
 echo "1. Запустите тест: node tests/websocket/test-websocket-connection.js ws://${HOST}:3000"
 echo "2. Проверьте логи: ssh ${USER}@${HOST} 'cd ${PROJECT_DIR} && pm2 logs daemon --lines 100 | grep WEBSOCKET'"
 echo "3. Ищите в логах: '[WEBSOCKET] DEBUG:' для детальной диагностики"
+

@@ -89,3 +89,4 @@ echo "─".repeat(80)
 echo ""
 
 rm -f "$TMP_EXPECT"
+

@@ -26,16 +26,14 @@ run_on_pi() {
     timeout 15 "$TMP_EXPECT" "$HOST" "$USER" "$PASS" "$1" 2>/dev/null | grep -v "password:" | grep -v "spawn" | grep -v "Warning" | sed 's/Connection to.*closed\.//' | tr -d '\r' || true
 }
 
-echo "Остановка event-logger..."
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" | head -3
-
-echo "Запуск event-logger..."
-run_on_pi "cd $PROJECT_DIR && pm2 start event-logger.js --name reacthome-event-logger 2>&1" | head -5
+echo "Перезапуск event-logger..."
+run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1" | head -5
 
 sleep 3
 
 echo "Статус:"
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
 echo "$STATUS"
 
 rm -f "$TMP_EXPECT"
+

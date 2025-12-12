@@ -185,23 +185,24 @@ echo ""
 # Перезапуск через ecosystem.config.js
 if echo "$SYNTAX" | grep -q -v "SyntaxError" || echo "$SYNTAX2" 2>/dev/null | grep -q -v "SyntaxError"; then
     echo "=== Перезапуск через ecosystem.config.js ==="
-    run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
-    run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger 2>&1" | head -5
+    run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
+    run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events 2>&1" | head -5
     echo ""
     
     sleep 4
     echo "=== Финальный статус ==="
-    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
     echo "$STATUS"
     echo ""
     
     if echo "$STATUS" | grep -q "online"; then
         echo "✅✅✅ УСПЕХ! EVENT-LOGGER ЗАПУЩЕН! ✅✅✅"
         echo ""
-        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 5 --nostream 2>&1 | tail -5")
+        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 5 --nostream 2>&1 | tail -5")
         echo "Последние логи:"
         echo "$LOGS"
     fi
 fi
 
 rm -f "$TMP_EXPECT"
+

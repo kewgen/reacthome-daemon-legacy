@@ -57,13 +57,13 @@ echo ""
 
 # 2. Свежие логи (последние 30 строк)
 echo "=== 2. Свежие логи event-logger (последние 30) ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 30 --nostream 2>&1 | tail -30")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 30 --nostream 2>&1 | tail -30")
 echo "$LOGS"
 echo ""
 
 # 3. Поиск подключения в логах
 echo "=== 3. Поиск логов подключения ==="
-WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 200 --nostream 2>&1 | grep -i 'подключ\|connect\|open\|192.168.88.4' | tail -10")
+WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 200 --nostream 2>&1 | grep -iE 'connect|open|192.168.88.4' | tail -10")
 if [ -n "$WS_LOGS" ]; then
     echo "$WS_LOGS"
 else
@@ -73,7 +73,7 @@ echo ""
 
 # 4. Подключения в логах демона
 echo "=== 4. Последние подключения в логах демона ==="
-DAEMON_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 100 --nostream 2>&1 | grep 'WEBSOCKET.*Новое подключение' | tail -10")
+DAEMON_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 100 --nostream 2>&1 | grep -E 'WEBSOCKET.*Новое подключение|WEBSOCKET.*New connection' | tail -10")
 if [ -n "$DAEMON_LOGS" ]; then
     echo "$DAEMON_LOGS"
 else

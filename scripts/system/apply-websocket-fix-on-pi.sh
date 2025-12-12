@@ -100,3 +100,4 @@ echo "Следующие шаги:"
 echo "1. Проверьте логи: pm2 logs daemon --lines 50 | grep -i websocket"
 echo "2. Проверьте подключение event-logger"
 echo "3. Ищите в логах: '[WEBSOCKET] Новое подключение: ... IP: ::1'"
+

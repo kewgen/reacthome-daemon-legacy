@@ -87,7 +87,13 @@ scripts/
 #### Развёртывание
 - **`system/deploy-event-logger.sh`** - Развёртывание event-logger на Raspberry Pi
 - **`system/stop-event-logger-on-pi.sh`** - Остановка event-logger на Raspberry Pi
+- **`system/start-event-logger-on-pi.sh`** - Запуск event-logger на Raspberry Pi
+- **`system/restart-event-logger-force.sh`** - Принудительный перезапуск event-logger
+- **`system/check-event-logger-status-quick.sh`** - Быстрая проверка статуса event-logger
+- **`system/check-event-logger-on-pi.sh`** - Полная проверка event-logger на Raspberry Pi
 - **`system/cleanup-and-restart-pi.sh`** - Очистка и перезапуск на Raspberry Pi
+
+**⚠️ Важно:** Процесс event-logger в PM2 называется **`events`** (не `reacthome-event-logger`).
 
 #### База данных
 - **`restore-database-from-backup.sh`** - Восстановление базы данных из бэкапа

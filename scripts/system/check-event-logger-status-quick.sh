@@ -26,12 +26,12 @@ run_on_pi() {
 }
 
 echo "=== Статус event-logger ==="
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
 echo "$STATUS"
 echo ""
 
 echo "=== Последние ошибки (5 строк) ==="
-ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --err --lines 5 --nostream 2>&1 | tail -5")
+ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --err --lines 5 --nostream 2>&1 | tail -5")
 echo "$ERRORS"
 echo ""
 
@@ -41,3 +41,4 @@ echo "$SYNTAX"
 echo ""
 
 rm -f "$TMP_EXPECT"
+

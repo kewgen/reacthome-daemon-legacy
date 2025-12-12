@@ -32,3 +32,4 @@ echo "Сохранено в problem-lines.txt"
 cat "$PROJECT_ROOT/problem-lines.txt"
 
 rm -f "$TMP_EXPECT"
+

@@ -58,3 +58,30 @@ test-db-tmp/
 
 # Archive of temporary scripts
 archive/
+
+# Event logger временные файлы
+event-logger-from-pi.js
+event-logger-current.js
+
+# Device mapping (генерируемые)
+device-mapping.json
+device-mapping-minimal.json
+
+# Временные скрипты и тесты
+daemon_load_*.js
+fix-syntax.js
+problem-lines.txt
+test-get-state.js
+test-ws-server.js
+
+# Утилиты мониторинга (локальные)
+monitor-device.js
+monitor-device-lazy.js
+MONITOR_DEVICE_README.md
+MONITOR_LAZY_README.md
+
+# Логи мониторинга
+logs/device-monitor/
+
+# Workspace файлы
+src/assist/lang/*.code-workspace

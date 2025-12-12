@@ -88,7 +88,7 @@ const config = \`module.exports = {
       restart_delay: 5000
     },
     {
-      name: 'reacthome-event-logger',
+      name: 'events',
       script: 'event-logger.js',
       cwd: '$PROJECT_DIR',
       instances: 1,
@@ -135,11 +135,11 @@ echo ""
 
 # Перезапускаем event-logger
 echo "=== 4. Перезапуск event-logger ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
 run_on_pi "cd $PROJECT_DIR && pm2 save 2>&1" > /dev/null
 sleep 2
 
-START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger --update-env 2>&1")
+START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events --update-env 2>&1")
 echo "$START_OUT"
 echo ""
 
@@ -158,7 +158,7 @@ echo "$STATUS"
 echo ""
 
 echo "=== 7. Проверка логов подключения ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 20 --nostream 2>&1 | tail -20")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
     

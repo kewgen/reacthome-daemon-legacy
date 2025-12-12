@@ -63,7 +63,7 @@ if [ "$FILE_EXISTS" = "exists" ]; then
     
     # 3. Проверка конфигурации event-logger
     echo "=== 3. Конфигурация event-logger в PM2 ==="
-    EVENT_LOGGER_CONFIG=$(run_on_pi "cd $PROJECT_DIR && grep -A 20 'reacthome-event-logger\|event-logger' ecosystem.config.js | head -25")
+    EVENT_LOGGER_CONFIG=$(run_on_pi "cd $PROJECT_DIR && grep events\|event-logger' ecosystem.config.js | head -25")
     if [ -n "$EVENT_LOGGER_CONFIG" ]; then
         echo "$EVENT_LOGGER_CONFIG"
     else
@@ -90,13 +90,13 @@ else
     echo "⚠️  Файл ecosystem.config.js не найден!"
     echo ""
     echo "=== Проверка, как запущен event-logger ==="
-    PM2_LIST=$(run_on_pi "cd $PROJECT_DIR && pm2 list 2>&1 | grep -A 5 reacthome-event-logger")
+    PM2_LIST=$(run_on_pi "cd $PROJECT_DIR && pm2 list | grep events")
     echo "$PM2_LIST"
     echo ""
     
     # Проверяем, как запущен процесс
     echo "=== Информация о процессе event-logger ==="
-    PROCESS_INFO=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | grep -E 'script path|interpreter|exec mode|node env' | head -5")
+    PROCESS_INFO=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1 | grep -E 'script path|interpreter|exec mode|node env' | head -5")
     echo "$PROCESS_INFO"
     echo ""
 fi
@@ -119,3 +119,4 @@ fi
 echo ""
 
 rm -f "$TMP_EXPECT"
+

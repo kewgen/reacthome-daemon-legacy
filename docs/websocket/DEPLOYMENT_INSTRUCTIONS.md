@@ -112,16 +112,16 @@ cat .env | grep OPENSEARCH
 pm2 status
 
 # Запустить event-logger (только event-logger, не весь ecosystem)
-pm2 start ecosystem.config.js --only reacthome-event-logger
+pm2 start ecosystem.config.js --only events
 
 # Проверить статус
 pm2 status
 
 # Посмотреть логи (первые 50 строк)
-pm2 logs reacthome-event-logger --lines 50
+pm2 logs events --lines 50
 
 # Следить за логами в реальном времени
-pm2 logs reacthome-event-logger
+pm2 logs events
 ```
 
 ## Шаг 8: Проверка работы event-logger
@@ -160,7 +160,7 @@ pm2 logs reacthome-event-logger
 pm2 status
 
 # Проверить логи за последние 100 строк
-pm2 logs reacthome-event-logger --lines 100
+pm2 logs events --lines 100
 
 # Проверить использование памяти
 pm2 monit
@@ -183,35 +183,35 @@ node tests/integration/test_event_logging_compatibility.js --date 2025-12-07
 ### Остановка event-logger
 
 ```bash
-pm2 stop reacthome-event-logger
+pm2 stop events
 ```
 
 ### Перезапуск event-logger
 
 ```bash
-pm2 restart reacthome-event-logger
+pm2 restart events
 ```
 
 ### Удаление event-logger из PM2
 
 ```bash
-pm2 delete reacthome-event-logger
+pm2 delete events
 ```
 
 ### Просмотр логов
 
 ```bash
 # Последние N строк
-pm2 logs reacthome-event-logger --lines N
+pm2 logs events --lines N
 
 # Следить за логами
-pm2 logs reacthome-event-logger
+pm2 logs events
 
 # Логи ошибок
-pm2 logs reacthome-event-logger --err
+pm2 logs events --err
 
 # Логи вывода
-pm2 logs reacthome-event-logger --out
+pm2 logs events --out
 ```
 
 ## Возможные проблемы
@@ -250,7 +250,7 @@ pm2 logs reacthome-event-logger --out
 
 2. При необходимости перезапустить:
    ```bash
-   pm2 restart reacthome-event-logger
+   pm2 restart events
    ```
 
 ## Следующие этапы
@@ -272,8 +272,8 @@ pm2 logs reacthome-event-logger --out
 
 ```bash
 # Остановить event-logger
-pm2 stop reacthome-event-logger
-pm2 delete reacthome-event-logger
+pm2 stop events
+pm2 delete events
 
 # Включить встроенное логирование
 # В ecosystem.config.js или .env установить:

@@ -38,6 +38,19 @@ const db = require("./src/db");
 const { cleanup } = require("./src/gc");
 const { initAssist } = require("./src/assist");
 
+// Инициализация логирования событий (если модули доступны)
+let eventLog = null;
+try {
+  const eventLogModule = require("./src/logging/event-log");
+  if (eventLogModule && typeof eventLogModule.init === 'function') {
+    eventLog = eventLogModule;
+    console.log('[DAEMON] Модуль логирования событий загружен');
+  }
+} catch (e) {
+  // Модуль логирования не найден - это нормально, если используется отдельный event-logger
+  console.log('[DAEMON] Модуль логирования событий не найден, используется отдельный процесс event-logger');
+}
+
 const init = {};
 
 const start = (id) => {
@@ -93,6 +106,17 @@ const load = async () => {
   assets.init();
   state.init(init);
   initAssist();
+  
+  // Инициализация логирования событий (если модуль доступен)
+  if (eventLog && typeof eventLog.init === 'function') {
+    try {
+      eventLog.init();
+      console.log('[DAEMON] Логирование событий инициализировано');
+    } catch (e) {
+      console.error('[DAEMON] Ошибка инициализации логирования:', e.message);
+    }
+  }
+  
   weather.manage();
   device.manage();
   drivers.manage();

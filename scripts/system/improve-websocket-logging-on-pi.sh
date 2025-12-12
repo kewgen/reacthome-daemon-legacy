@@ -190,7 +190,7 @@ echo ""
 
 # Перезапускаем event-logger
 echo "=== 6. Перезапуск event-logger ==="
-RESTART_RESULT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1")
+RESTART_RESULT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1")
 echo "$RESTART_RESULT" | head -10
 echo ""
 
@@ -200,7 +200,7 @@ sleep 5
 
 # Проверяем логи
 echo "=== 8. Проверка логов event-logger ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 15 --nostream 2>&1 | tail -15")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 15 --nostream 2>&1 | tail -15")
 echo "$LOGS"
 echo ""
 

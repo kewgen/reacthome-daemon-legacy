@@ -93,8 +93,8 @@ if (content.includes('DAEMON_WS_URL')) {
     content = content.replace(/DAEMON_WS_URL:\s*['\"][^'\"]*['\"]/g, 'DAEMON_WS_URL: \"' + newUrl + '\"');
     console.log('✅ Обновлён существующий DAEMON_WS_URL');
 } else {
-    // Добавляем в env секцию reacthome-event-logger
-    const envPattern = /(reacthome-event-logger[^}]*env:\s*\{)([^}]*)(\})/s;
+    // Добавляем в env секцию events
+    const envPattern = /(events[^}]*env:\s*\{)([^}]*)(\})/s;
     if (envPattern.test(content)) {
         content = content.replace(envPattern, (match, before, env, after) => {
             if (env.trim() && !env.trim().endsWith(',')) {
@@ -104,7 +104,7 @@ if (content.includes('DAEMON_WS_URL')) {
         });
         console.log('✅ Добавлен DAEMON_WS_URL в env');
     } else {
-        console.log('⚠️  Не удалось найти секцию env для reacthome-event-logger');
+        console.log('⚠️  Не удалось найти секцию env для events');
     }
 }
 
@@ -190,8 +190,8 @@ echo ""
 
 # Перезапускаем event-logger с новым URL
 echo "=== 8. Перезапуск event-logger с новым URL ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
-run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events 2>&1" | head -5
 echo ""
 
 # Ждём и проверяем логи
@@ -199,7 +199,7 @@ echo "=== 9. Ожидание подключения (20 секунд) ==="
 sleep 20
 
 echo "=== 10. Проверка логов event-logger ==="
-EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 20 --nostream 2>&1 | tail -20")
 if [ -n "$EVENT_LOGGER_LOGS" ]; then
     echo "$EVENT_LOGGER_LOGS"
     

@@ -52,13 +52,13 @@ echo ""
 
 # 1. Статус event-logger
 echo "=== 1. Статус event-logger ==="
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1")
 echo "$STATUS"
 echo ""
 
 # 2. Логи event-logger (последние 50 строк)
 echo "=== 2. Логи event-logger (последние 50 строк) ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | tail -50")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | tail -50")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
 else
@@ -68,7 +68,7 @@ echo ""
 
 # 3. Ошибки event-logger
 echo "=== 3. Ошибки event-logger (последние 30 строк) ==="
-ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --err --lines 30 --nostream 2>&1 | tail -30")
+ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --err --lines 30 --nostream 2>&1 | tail -30")
 if [ -n "$ERRORS" ]; then
     echo "$ERRORS"
 else
@@ -123,3 +123,4 @@ rm -f "$TMP_EXPECT"
 echo "=========================================="
 echo "✅ Проверка завершена"
 echo "=========================================="
+

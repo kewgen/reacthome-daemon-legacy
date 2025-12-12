@@ -58,7 +58,7 @@ echo ""
 
 # 2. Поиск логов подключения к WebSocket
 echo "=== 2. Логи подключения к WebSocket (последние 30) ==="
-WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 100 --nostream 2>&1 | grep -iE 'подключен|connected|open|WebSocket.*192.168.88.4|ws://192.168.88.4|ws://localhost' | tail -30")
+WS_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 100 --nostream 2>&1 | grep -iE 'connected|open|WebSocket.*192.168.88.4|ws://192.168.88.4|ws://localhost' | tail -30")
 if [ -n "$WS_LOGS" ]; then
     echo "$WS_LOGS"
 else
@@ -97,7 +97,7 @@ echo ""
 
 # 5. Проверка обработки событий в event-logger
 echo "=== 5. Обработка событий в event-logger (последние 10) ==="
-EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | grep -iE 'буфер|событие|event|ACTION_SET' | tail -10")
+EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | grep -iE 'buffer|event|ACTION_SET|буфер|событие' | tail -10")
 if [ -n "$EVENT_LOGS" ]; then
     echo "$EVENT_LOGS"
 else
@@ -113,7 +113,7 @@ if run_on_pi "cd $PROJECT_DIR && test -f scripts/check-opensearch-events.js" | g
 else
     echo "⚠️  Скрипт проверки OpenSearch не найден"
     echo "Проверяем логи OpenSearch в event-logger..."
-    OPENSEARCH_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 100 --nostream 2>&1 | grep -iE 'opensearch|elastic|индекс|index|отправлено|sent' | tail -10")
+    OPENSEARCH_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 100 --nostream 2>&1 | grep -iE 'opensearch|elastic|index|sent' | tail -10")
     if [ -n "$OPENSEARCH_LOGS" ]; then
         echo "$OPENSEARCH_LOGS"
     else

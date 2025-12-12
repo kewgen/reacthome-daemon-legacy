@@ -62,12 +62,12 @@ fi
 echo ""
 
 echo "=== 2. Статус event-logger ==="
-STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | grep -E 'status|uptime|restarts' | head -3")
+STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1 | grep -E 'status|uptime|restarts' | head -3")
 echo "$STATUS"
 echo ""
 
 echo "=== 3. Последние логи (после улучшения) ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 10 --nostream 2>&1 | tail -10")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 10 --nostream 2>&1 | tail -10")
 echo "$LOGS"
 echo ""
 

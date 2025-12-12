@@ -82,11 +82,11 @@ echo ""
 
 # 3. Перезапускаем event-logger
 echo "=== 3. Перезапуск event-logger ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
 run_on_pi "cd $PROJECT_DIR && pm2 save 2>&1" > /dev/null
 sleep 2
 
-START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger --update-env 2>&1")
+START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events --update-env 2>&1")
 echo "$START_OUT"
 echo ""
 
@@ -106,7 +106,7 @@ echo ""
 
 # 5. Проверяем логи подключения
 echo "=== 6. Проверка логов подключения ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 30 --nostream 2>&1 | tail -30")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 30 --nostream 2>&1 | tail -30")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
     
@@ -124,7 +124,7 @@ echo ""
 
 # 6. Проверяем подключение в логах демона
 echo "=== 7. Подключения в логах демона ==="
-DAEMON_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 50 --nostream 2>&1 | grep 'WEBSOCKET.*Новое подключение' | tail -5")
+DAEMON_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 50 --nostream 2>&1 | grep -E 'WEBSOCKET.*Новое подключение|WEBSOCKET.*New connection' | tail -5")
 if [ -n "$DAEMON_LOGS" ]; then
     echo "$DAEMON_LOGS"
     
@@ -146,7 +146,7 @@ echo ""
 
 # 8. Проверяем обработку событий
 echo "=== 9. Обработка событий (последние 10) ==="
-EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | grep -iE 'буфер|событие|event' | tail -10")
+EVENT_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | grep -iE 'buffer|event|буфер|событие' | tail -10")
 if [ -n "$EVENT_LOGS" ]; then
     echo "$EVENT_LOGS"
 else

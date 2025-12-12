@@ -61,7 +61,7 @@ echo "=========================================="
 echo "3. Последние логи event-logger (50 строк)"
 echo "=========================================="
 echo ""
-run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | tail -55"
+run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | tail -55"
 echo ""
 
 echo "=========================================="
@@ -80,7 +80,7 @@ echo "=========================================="
 echo "5. Критические ошибки в логах event-logger"
 echo "=========================================="
 echo ""
-ERRORS_LOGGER=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 500 --nostream 2>&1 | grep -iE 'error|fatal|exception|fail' | tail -20")
+ERRORS_LOGGER=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 500 --nostream 2>&1 | grep -iE 'error|fatal|exception|fail' | tail -20")
 if [ -n "$ERRORS_LOGGER" ]; then
     echo "$ERRORS_LOGGER"
 else

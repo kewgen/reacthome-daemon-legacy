@@ -7,6 +7,14 @@
 #   ./scripts/system/restore-env-on-pi.sh
 #
 
+# Подтягиваем локальный .env, чтобы взять OPENSEARCH_* с дев‑машины
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+if [ -f "$PROJECT_ROOT/.env" ]; then
+    # shellcheck disable=SC1090
+    source "$PROJECT_ROOT/.env"
+fi
+
 HOST="${REACTHOME_PI_HOST:-192.168.88.4}"
 USER="${REACTHOME_PI_USER:-pi}"
 PASS="${REACTHOME_PI_PASS}"
@@ -93,7 +101,15 @@ echo "3. Создание нового .env файла"
 echo "=========================================="
 echo ""
 
-# Создаём шаблон .env
+# Берём OpenSearch-настройки из локального .env, если они заданы
+LOCAL_OPENSEARCH_ENABLED="${OPENSEARCH_ENABLED:-true}"
+LOCAL_OPENSEARCH_URL="${OPENSEARCH_URL:-https://c-c9q1p4fggl654fni7le4.rw.mdb.yandexcloud.net:9200}"
+LOCAL_OPENSEARCH_USER="${OPENSEARCH_USER:-admin}"
+LOCAL_OPENSEARCH_PASSWORD="${OPENSEARCH_PASSWORD:-}"
+LOCAL_OPENSEARCH_INDEX_PREFIX="${OPENSEARCH_INDEX_PREFIX:-reacthome-events}"
+LOCAL_OPENSEARCH_CA_CERT="${OPENSEARCH_CA_CERT:-~/.opensearch/root.crt}"
+
+# Создаём шаблон .env уже с реальными OPENSEARCH_* из локальной машины
 ENV_CONTENT="# Переменные окружения для ReactHome Daemon
 # ВАЖНО: Этот файл содержит секреты, не коммитьте его в git!
 
@@ -104,12 +120,12 @@ EVENT_LOGGING_ENABLED=true
 DAEMON_WS_URL=ws://localhost:3000
 
 # OpenSearch настройки
-OPENSEARCH_ENABLED=true
-OPENSEARCH_URL=https://c-c9q1p4fggl654fni7le4.rw.mdb.yandexcloud.net:9200
-OPENSEARCH_USER=admin
-OPENSEARCH_PASSWORD=
-OPENSEARCH_INDEX_PREFIX=reacthome-events
-OPENSEARCH_CA_CERT=~/.opensearch/root.crt
+OPENSEARCH_ENABLED=${LOCAL_OPENSEARCH_ENABLED}
+OPENSEARCH_URL=${LOCAL_OPENSEARCH_URL}
+OPENSEARCH_USER=${LOCAL_OPENSEARCH_USER}
+OPENSEARCH_PASSWORD=${LOCAL_OPENSEARCH_PASSWORD}
+OPENSEARCH_INDEX_PREFIX=${LOCAL_OPENSEARCH_INDEX_PREFIX}
+OPENSEARCH_CA_CERT=${LOCAL_OPENSEARCH_CA_CERT}
 
 # Node.js окружение
 NODE_ENV=production

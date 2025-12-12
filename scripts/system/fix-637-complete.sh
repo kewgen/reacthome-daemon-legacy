@@ -90,17 +90,18 @@ if echo "$SYNTAX" | grep -q "SyntaxError"; then
 else
     echo "✅ Синтаксис исправлен!"
     echo "Перезапуск event-logger..."
-    run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1" | head -3
+    run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1" | head -3
     sleep 4
-    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
     echo "Статус: $STATUS"
     if echo "$STATUS" | grep -q "online"; then
         echo ""
         echo "✅✅✅ УСПЕХ! EVENT-LOGGER ЗАПУЩЕН! ✅✅✅"
-        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 5 --nostream 2>&1 | tail -5")
+        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 5 --nostream 2>&1 | tail -5")
         echo "Логи:"
         echo "$LOGS"
     fi
 fi
 
 rm -f "$TMP_EXPECT"
+

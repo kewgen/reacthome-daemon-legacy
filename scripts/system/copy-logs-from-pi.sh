@@ -121,7 +121,7 @@ echo "📦 Получаю последние логи демона (1000 стр�
 mkdir -p "$LOCAL_LOG_DIR/pm2-live"
 
 run_on_pi "cd $PROJECT_DIR && pm2 logs daemon --lines 1000 --nostream 2>&1" > "$LOCAL_LOG_DIR/pm2-live/daemon-latest.log" 2>/dev/null
-run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 1000 --nostream 2>&1" > "$LOCAL_LOG_DIR/pm2-live/event-logger-latest.log" 2>/dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 1000 --nostream 2>&1" > "$LOCAL_LOG_DIR/pm2-live/event-logger-latest.log" 2>/dev/null
 
 LIVE_COUNT=$(find "$LOCAL_LOG_DIR/pm2-live" -type f -size +0 2>/dev/null | wc -l | tr -d ' ')
 if [ "$LIVE_COUNT" -gt 0 ]; then

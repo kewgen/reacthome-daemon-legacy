@@ -167,8 +167,8 @@ echo ""
 
 # Перезапускаем event-logger
 echo "=== 5. Перезапуск event-logger ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
-run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger --update-env 2>&1" | head -5
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events --update-env 2>&1" | head -5
 echo ""
 
 # Ждём и проверяем логи
@@ -176,7 +176,7 @@ echo "=== 6. Ожидание запуска (10 секунд) ==="
 sleep 10
 
 echo "=== 7. Проверка логов event-logger ==="
-EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 20 --nostream 2>&1 | tail -20")
 if [ -n "$EVENT_LOGGER_LOGS" ]; then
     echo "$EVENT_LOGGER_LOGS"
     

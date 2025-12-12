@@ -61,7 +61,7 @@ echo ""
 
 # Удаляем старый процесс
 echo "=== 2. Удаление старого процесса ==="
-run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
 run_on_pi "cd $PROJECT_DIR && pm2 save 2>&1" > /dev/null
 echo "✅ Процесс удалён"
 echo ""
@@ -71,7 +71,7 @@ sleep 2
 
 # Запускаем через ecosystem.config.js с явным указанием переменных
 echo "=== 3. Запуск event-logger через ecosystem.config.js ==="
-START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger --update-env 2>&1")
+START_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events --update-env 2>&1")
 echo "$START_OUT"
 echo ""
 
@@ -84,7 +84,7 @@ echo ""
 
 # Проверяем переменные окружения через pm2 env
 echo "=== 5. Проверка переменных окружения ==="
-EVENT_LOGGER_ID=$(run_on_pi "cd $PROJECT_DIR && pm2 jlist | node -e \"const data = JSON.parse(require('fs').readFileSync(0, 'utf-8')); const app = data.find(a => a.name === 'reacthome-event-logger'); console.log(app ? app.pm_id : 'NOT_FOUND');\"")
+EVENT_LOGGER_ID=$(run_on_pi "cd $PROJECT_DIR && pm2 jlist | node -e \"const data = JSON.parse(require('fs').readFileSync(0, 'utf-8')); const app = data.find(a => a.name === 'events'); console.log(app ? app.pm_id : 'NOT_FOUND');\"")
 if [ "$EVENT_LOGGER_ID" != "NOT_FOUND" ] && [ -n "$EVENT_LOGGER_ID" ]; then
     ENV_CHECK=$(run_on_pi "cd $PROJECT_DIR && pm2 env $EVENT_LOGGER_ID 2>&1 | grep DAEMON_WS_URL || echo 'NOT_FOUND'")
     echo "DAEMON_WS_URL: $ENV_CHECK"
@@ -104,7 +104,7 @@ echo "=== 6. Ожидание подключения (30 секунд) ==="
 sleep 30
 
 echo "=== 7. Проверка логов подключения ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 20 --nostream 2>&1 | tail -20")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 20 --nostream 2>&1 | tail -20")
 if [ -n "$LOGS" ]; then
     echo "$LOGS"
     

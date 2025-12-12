@@ -69,7 +69,7 @@ echo "=== 2. Проверка порта 3000 ==="
 PORT_CHECK=$(run_on_pi "netstat -tuln 2>&1 | grep ':3000' || ss -tuln 2>&1 | grep ':3000' || lsof -i :3000 2>&1 | head -5")
 if [ -n "$PORT_CHECK" ]; then
     echo "✅ Порт 3000 открыт:"
-    echo "$PORT_CHECK"
+echo "$PORT_CHECK"
 else
     echo "❌ Порт 3000 не открыт или не слушается"
 fi
@@ -165,15 +165,15 @@ echo ""
 
 # 13. Проверка event-logger (если есть)
 echo "=== 13. Проверка event-logger (если запущен) ==="
-EVENT_LOGGER=$(run_on_pi "cd $PROJECT_DIR && pm2 describe reacthome-event-logger 2>&1 | head -10 || echo 'event-logger не запущен'")
+EVENT_LOGGER=$(run_on_pi "cd $PROJECT_DIR && pm2 describe events 2>&1 | head -10 || echo 'event-logger не запущен'")
 echo "$EVENT_LOGGER"
 echo ""
 
 if echo "$EVENT_LOGGER" | grep -q "online"; then
     echo "Логи event-logger (последние 20 строк):"
-    EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 50 --nostream 2>&1 | tail -20")
+    EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 50 --nostream 2>&1 | tail -20")
     echo "$EVENT_LOGGER_LOGS"
-    echo ""
+echo ""
 fi
 
 rm -f "$TMP_EXPECT"

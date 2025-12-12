@@ -113,7 +113,7 @@ echo ""
 
 # 4. Перезапускаем event-logger
 echo "=== 4. Перезапуск event-logger ==="
-RESTART_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart reacthome-event-logger 2>&1")
+RESTART_OUT=$(run_on_pi "cd $PROJECT_DIR && pm2 restart events 2>&1")
 echo "$RESTART_OUT"
 echo ""
 
@@ -125,7 +125,7 @@ echo ""
 
 # 6. Показываем логи
 echo "=== 6. Логи event-logger (последние 10 строк) ==="
-LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 10 --nostream 2>&1 | tail -10")
+LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 10 --nostream 2>&1 | tail -10")
 echo "$LOGS"
 echo ""
 
@@ -134,3 +134,4 @@ rm -f "$TMP_EXPECT"
 echo "=========================================="
 echo "✅ Исправление завершено"
 echo "=========================================="
+

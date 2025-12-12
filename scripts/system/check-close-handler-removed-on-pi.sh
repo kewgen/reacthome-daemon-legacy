@@ -84,7 +84,7 @@ echo ""
 
 # Проверяем свежие логи event-logger
 echo "=== 3. Свежие логи event-logger (последние 10) ==="
-EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 10 --nostream 2>&1 | tail -10")
+EVENT_LOGGER_LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 10 --nostream 2>&1 | tail -10")
 if [ -n "$EVENT_LOGGER_LOGS" ]; then
     echo "$EVENT_LOGGER_LOGS"
     

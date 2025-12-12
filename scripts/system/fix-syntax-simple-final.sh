@@ -78,26 +78,27 @@ else
     echo "✅ Синтаксис исправлен!"
     echo ""
     echo "=== 4. Перезапуск event-logger ==="
-    run_on_pi "cd $PROJECT_DIR && pm2 delete reacthome-event-logger 2>&1" > /dev/null
+    run_on_pi "cd $PROJECT_DIR && pm2 delete events 2>&1" > /dev/null
     sleep 1
-    run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only reacthome-event-logger 2>&1" | head -5
+    run_on_pi "cd $PROJECT_DIR && pm2 start ecosystem.config.js --only events 2>&1" | head -5
     echo ""
     sleep 5
-    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status reacthome-event-logger 2>&1 | grep reacthome-event-logger")
+    STATUS=$(run_on_pi "cd $PROJECT_DIR && pm2 status events 2>&1 | grep events")
     echo "Статус: $STATUS"
     echo ""
     if echo "$STATUS" | grep -q "online"; then
         echo "✅✅✅ УСПЕХ! EVENT-LOGGER ЗАПУЩЕН! ✅✅✅"
         echo ""
-        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 10 --nostream 2>&1 | tail -10")
+        LOGS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 10 --nostream 2>&1 | tail -10")
         echo "Последние логи:"
         echo "$LOGS"
     else
         echo "⚠️  Event-logger всё ещё не запущен"
-        ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --err --lines 5 --nostream 2>&1 | tail -5")
+        ERRORS=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --err --lines 5 --nostream 2>&1 | tail -5")
         echo "Ошибки:"
         echo "$ERRORS"
     fi
 fi
 
 rm -f "$TMP_EXPECT"
+

@@ -204,6 +204,7 @@ module.exports = {
   "device": {
     "type": "DEVICE_TYPE_RELAY_2",
     "human": "Свет Лоджия",
+    "code": "light_lodgia",
     "name": "Свет Лоджия"
   },
   "param": "value",
@@ -231,6 +232,7 @@ module.exports = {
 | `id` | string | Идентификатор устройства/канала/скрипта |
 | `device.type` | string \| null | Тип устройства (например, "DEVICE_TYPE_RELAY_2") |
 | `device.human` | string \| null | Человекочитаемое название устройства (title/code/name через "/") |
+| `device.code` | string \| null | Код устройства (если есть) |
 | `device.name` | string \| null | Поле name устройства (если есть) |
 | `param` | string | Имя изменённого параметра (value, brightness, r, g, b, fan_speed, mode, direction, setpoint, temperature, humidity, co2, executed, last_execution) |
 | `old` | any \| null | Предыдущее значение параметра (может быть null для первого значения) |
@@ -497,6 +499,7 @@ if (opensearch.isEnabled()) {
             "type": "text",
             "fields": { "keyword": { "type": "keyword" } }
           },
+          "code": { "type": "keyword" },
           "name": { "type": "keyword" }
         }
       },

@@ -51,13 +51,13 @@ echo ""
 
 # Логи вывода
 echo "=== Вывод ==="
-OUT_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --lines 40 --nostream 2>&1 | tail -40")
+OUT_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --lines 40 --nostream 2>&1 | tail -40")
 echo "$OUT_LOG"
 echo ""
 
 # Логи ошибок
 echo "=== Ошибки ==="
-ERR_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs reacthome-event-logger --err --lines 20 --nostream 2>&1 | tail -20")
+ERR_LOG=$(run_on_pi "cd $PROJECT_DIR && pm2 logs events --err --lines 20 --nostream 2>&1 | tail -20")
 echo "$ERR_LOG"
 echo ""
 

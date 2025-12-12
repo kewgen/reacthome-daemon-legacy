@@ -4,12 +4,47 @@ const { broadcast } = require("../websocket/peer");
 const state = require("../controllers/state");
 const db = require("../db");
 
+// Инициализация логирования событий (если модуль доступен)
+let eventLog = null;
+try {
+  const eventLogModule = require("../logging/event-log");
+  if (eventLogModule && typeof eventLogModule.add === 'function') {
+    eventLog = eventLogModule;
+  }
+} catch (e) {
+  // Модуль логирования не найден - это нормально
+}
+
 module.exports.get = state.get;
 
 const apply = (id, payload) => {
   if (!id) return;
+  const oldState = state.get(id);
   payload.timestamp = Date.now();
   state.set(id, payload);
+  const newState = state.get(id);
+  
+  // Логирование события (если модуль доступен)
+  if (eventLog && oldState && newState) {
+    try {
+      // Получаем контекст из AsyncLocalStorage, если доступен
+      let context = {};
+      try {
+        const contextModule = require("../logging/context");
+        if (contextModule && typeof contextModule.getStore === 'function') {
+          context = contextModule.getStore() || {};
+        }
+      } catch (e) {
+        // Модуль контекста не найден - используем пустой контекст
+      }
+      
+      eventLog.add(id, oldState, newState, context, payload);
+    } catch (e) {
+      // Ошибка логирования не должна прерывать работу демона
+      console.error('[create] Ошибка логирования события:', e.message);
+    }
+  }
+  
   broadcast({ type: ACTION_SET, id, payload });
   try {
     db.put(id, state.get(id), (err) => {
