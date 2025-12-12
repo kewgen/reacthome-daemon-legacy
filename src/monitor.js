@@ -58,12 +58,12 @@
  * 
  * УПРАВЛЕНИЕ:
  * ===========
- * • Tab          - Переключение между панелями (фильтры ↔ таблица)
- * • ←/→          - Переход между панелями фильтров и таблицы
- * • ↑/↓ или j/k  - Навигация по списку
- * • Enter/Space  - Выбор фильтра / Просмотр устройства
- * • PgUp/PgDown  - Постраничная прокрутка (только в таблице)
- * • Home/End     - К началу/концу списка (только в таблице)
+ * • Tab          - Переключение между панелями (фильтры ↔ таблица ↔ параметры)
+ * • ←/→          - Переход между панелями (фильтры ↔ таблица ↔ параметры)
+ * • ↑/↓ или j/k  - Навигация по списку / Скроллинг текста (в панели параметров)
+ * • Enter/Space  - Применить/снять фильтр (toggle) / Просмотр устройства
+ * • PgUp/PgDown  - Постраничная прокрутка (таблица и параметры)
+ * • Home/End     - К началу/концу списка (таблица и параметры)
  * • c            - Копировать раздел "Устройство" в буфер обмена
  * • y+c          - Копировать строку таблицы в буфер обмена
  * • q или Ctrl+C - Выход
@@ -1540,10 +1540,11 @@ class TerminalKitStatusDisplay {
     this.devices = devices;
     this.isLoading = devices.length === 0; // Флаг загрузки данных
     
+    // Мультифильтр: используем массивы для поддержки множественного выбора
     this.activeFilters = {
-      category: null,
-      consumerType: null,
-      site: null,
+      category: [],      // Массив выбранных категорий
+      consumerType: [],  // Массив выбранных типов потребителей
+      site: [],          // Массив выбранных помещений
     };
     
     this.isNavigating = false;
@@ -1658,6 +1659,18 @@ class TerminalKitStatusDisplay {
     // tableVisibleRows = height - startY - заголовок - рамки - статистика
     this.tableVisibleRows = Math.max(1, this.height - 2 - 1 - 2 - 1); // height - 6 минимум 1
     
+    // Прокрутка для панели фильтров (аналогично таблице)
+    // filterScroll - это индекс в filterRows (все строки, включая заголовки)
+    this.filterScroll = 0;
+    // Вычисляем количество видимых строк фильтров с учетом рамок
+    // Зачем: Сокращаем на 2 строки, чтобы не выходить за рамки
+    this.filterVisibleRows = Math.max(1, this.height - 2 - 2 - 2); // height - 6 минимум 1 (минус рамки + 2)
+    
+    // Прокрутка для панели параметров устройства
+    this.deviceInfoScroll = 0;
+    // Вычисляем количество видимых строк параметров с учетом рамок
+    this.deviceInfoVisibleRows = Math.max(1, this.height - 2 - 2); // height - 4 минимум 1 (минус рамки)
+    
     // Строим список фильтров при инициализации
     this.buildFilterRows();
     
@@ -1695,6 +1708,8 @@ class TerminalKitStatusDisplay {
       this.rightX = this.centerX + this.centerWidth + 3;
       // Пересчитываем количество видимых строк при изменении размера
       this.tableVisibleRows = Math.max(1, this.height - 2 - 1 - 2 - 1); // height - 6 минимум 1
+      this.filterVisibleRows = Math.max(1, this.height - 2 - 2 - 2); // height - 6 минимум 1 (минус рамки + 2)
+      this.deviceInfoVisibleRows = Math.max(1, this.height - 2 - 2); // height - 4 минимум 1 (минус рамки)
       this.renderFull(); // При изменении размера нужен полный рендер с очисткой
     });
     
@@ -1713,8 +1728,8 @@ class TerminalKitStatusDisplay {
     }
     
     if (name === 'TAB') {
-      // Переключение между панелями (только фильтры и таблица, без панели параметров)
-      this.activePanel = (this.activePanel + 1) % 2;
+      // Переключение между панелями (фильтры, таблица, параметры)
+      this.activePanel = (this.activePanel + 1) % 3;
       // При переключении на панель фильтров синхронизируем filterIndex с актуальными данными
       if (this.activePanel === 0) {
         this.buildFilterRows();
@@ -1722,6 +1737,10 @@ class TerminalKitStatusDisplay {
         if (this.filterIndex < 0 || this.filterIndex >= this.filterSelectable.length) {
           this.filterIndex = Math.max(0, this.filterSelectable.length - 1);
         }
+      }
+      // При переключении на панель параметров обновляем скроллинг
+      if (this.activePanel === 2) {
+        this.updateDeviceInfoScroll();
       }
       // Перерисовываем рамки при смене активной панели (меняется цвет)
       this.needsFullRender = true;
@@ -1731,14 +1750,19 @@ class TerminalKitStatusDisplay {
     
     // Переключение между панелями стрелками влево/вправо
     if (name === 'LEFT') {
-      // Переход к панели слева (фильтры)
+      // Переход к панели слева
       if (this.activePanel === 1) {
+        // Из таблицы в фильтры
         this.activePanel = 0;
         this.buildFilterRows();
-        // Проверяем, что filterIndex в допустимых границах
         if (this.filterIndex < 0 || this.filterIndex >= this.filterSelectable.length) {
           this.filterIndex = Math.max(0, this.filterSelectable.length - 1);
         }
+        this.needsFullRender = true;
+        this.render();
+      } else if (this.activePanel === 2) {
+        // Из параметров в таблицу
+        this.activePanel = 1;
         this.needsFullRender = true;
         this.render();
       }
@@ -1746,9 +1770,16 @@ class TerminalKitStatusDisplay {
     }
     
     if (name === 'RIGHT') {
-      // Переход к панели справа (таблица)
+      // Переход к панели справа
       if (this.activePanel === 0) {
+        // Из фильтров в таблицу
         this.activePanel = 1;
+        this.needsFullRender = true;
+        this.render();
+      } else if (this.activePanel === 1) {
+        // Из таблицы в параметры
+        this.activePanel = 2;
+        this.updateDeviceInfoScroll();
         this.needsFullRender = true;
         this.render();
       }
@@ -1778,16 +1809,38 @@ class TerminalKitStatusDisplay {
         if (this.filterIndex > 0) {
           this.beginNavigation();
           this.filterIndex--;
+          this.updateFilterScroll();
           this.render();
         }
       } else if (name === 'DOWN' || name === 'j') {
         if (this.filterIndex < maxFilterIndex) {
           this.beginNavigation();
           this.filterIndex++;
+          this.updateFilterScroll();
           this.render();
         }
+      } else if (name === 'PAGE_UP') {
+        this.beginNavigation();
+        this.filterIndex = Math.max(0, this.filterIndex - this.filterVisibleRows);
+        this.updateFilterScroll();
+        this.render();
+      } else if (name === 'PAGE_DOWN') {
+        this.beginNavigation();
+        this.filterIndex = Math.min(this.filterSelectable.length - 1, this.filterIndex + this.filterVisibleRows);
+        this.updateFilterScroll();
+        this.render();
+      } else if (name === 'HOME') {
+        this.beginNavigation();
+        this.filterIndex = 0;
+        this.updateFilterScroll();
+        this.render();
+      } else if (name === 'END') {
+        this.beginNavigation();
+        this.filterIndex = this.filterSelectable.length - 1;
+        this.updateFilterScroll();
+        this.render();
       } else if (name === 'ENTER' || name === 'SPACE' || name === ' ') {
-        // Применяем выбранный фильтр (Enter или Space)
+        // Применяем выбранный фильтр (Enter или Space с toggle логикой)
         const row = this.getSelectedFilterRow();
         this.applyFilterRow(row);
       }
@@ -1798,6 +1851,8 @@ class TerminalKitStatusDisplay {
           this.beginNavigation();
           this.selectedIndex--;
           this.updateTableScroll();
+          // Сбрасываем скроллинг панели параметров при смене устройства
+          this.deviceInfoScroll = 0;
           this.render();
         }
       } else if (name === 'DOWN' || name === 'j') {
@@ -1809,27 +1864,77 @@ class TerminalKitStatusDisplay {
           if (this.selectedIndex >= this.devices.length) {
             this.selectedIndex = Math.max(0, this.devices.length - 1);
           }
+          // Сбрасываем скроллинг панели параметров при смене устройства
+          this.deviceInfoScroll = 0;
           this.render();
         }
       } else if (name === 'PAGE_UP') {
         this.beginNavigation();
         this.selectedIndex = Math.max(0, this.selectedIndex - this.tableVisibleRows);
         this.updateTableScroll();
+        // Сбрасываем скроллинг панели параметров при смене устройства
+        this.deviceInfoScroll = 0;
         this.render();
       } else if (name === 'PAGE_DOWN') {
         this.beginNavigation();
         this.selectedIndex = Math.min(this.devices.length - 1, this.selectedIndex + this.tableVisibleRows);
         this.updateTableScroll();
+        // Сбрасываем скроллинг панели параметров при смене устройства
+        this.deviceInfoScroll = 0;
         this.render();
       } else if (name === 'HOME') {
         this.beginNavigation();
         this.selectedIndex = 0;
         this.updateTableScroll();
+        // Сбрасываем скроллинг панели параметров при смене устройства
+        this.deviceInfoScroll = 0;
         this.render();
       } else if (name === 'END') {
         this.beginNavigation();
         this.selectedIndex = this.devices.length - 1;
         this.updateTableScroll();
+        // Сбрасываем скроллинг панели параметров при смене устройства
+        this.deviceInfoScroll = 0;
+        this.render();
+      }
+    } else if (this.activePanel === 2) {
+      // Навигация в панели параметров (скроллинг текста)
+      if (this.selectedIndex < 0 || this.selectedIndex >= this.devices.length) {
+        return; // Нет выбранного устройства
+      }
+      
+      const device = this.devices[this.selectedIndex];
+      const deviceInfo = this.getDeviceInfoText(device);
+      const lines = deviceInfo.split('\n');
+      const maxScroll = Math.max(0, lines.length - this.deviceInfoVisibleRows);
+      
+      if (name === 'UP' || name === 'k') {
+        if (this.deviceInfoScroll > 0) {
+          this.beginNavigation();
+          this.deviceInfoScroll = Math.max(0, this.deviceInfoScroll - 1);
+          this.render();
+        }
+      } else if (name === 'DOWN' || name === 'j') {
+        if (this.deviceInfoScroll < maxScroll) {
+          this.beginNavigation();
+          this.deviceInfoScroll = Math.min(maxScroll, this.deviceInfoScroll + 1);
+          this.render();
+        }
+      } else if (name === 'PAGE_UP') {
+        this.beginNavigation();
+        this.deviceInfoScroll = Math.max(0, this.deviceInfoScroll - this.deviceInfoVisibleRows);
+        this.render();
+      } else if (name === 'PAGE_DOWN') {
+        this.beginNavigation();
+        this.deviceInfoScroll = Math.min(maxScroll, this.deviceInfoScroll + this.deviceInfoVisibleRows);
+        this.render();
+      } else if (name === 'HOME') {
+        this.beginNavigation();
+        this.deviceInfoScroll = 0;
+        this.render();
+      } else if (name === 'END') {
+        this.beginNavigation();
+        this.deviceInfoScroll = maxScroll;
         this.render();
       }
     }
@@ -1894,7 +1999,10 @@ class TerminalKitStatusDisplay {
 
     addRow({ label: 'Категории:', kind: 'title' });
     categories.forEach(cat => {
-      const isChecked = this.activeFilters.category === cat.value;
+      // Проверяем, есть ли значение в массиве (null считается как "Все")
+      const isChecked = cat.value === null 
+        ? this.activeFilters.category.length === 0 
+        : this.activeFilters.category.includes(cat.value);
       addRow({
         label: `${isChecked ? '☑' : '☐'} ${cat.label}`,
         kind: 'category',
@@ -1909,7 +2017,7 @@ class TerminalKitStatusDisplay {
     if (consumerTypes.length > 0) {
       addRow({ label: '', kind: 'spacer' });
       addRow({ label: 'Потребители:', kind: 'title' });
-      const allSelected = this.activeFilters.consumerType === null;
+      const allSelected = this.activeFilters.consumerType.length === 0;
       addRow({
         label: `${allSelected ? '☑' : '☐'} Все`,
         kind: 'consumer',
@@ -1923,7 +2031,7 @@ class TerminalKitStatusDisplay {
         thermostat: 'thermostat', hygrostat: 'hygrostat', co2_stat: 'co2_stat',
       };
       consumerTypes.forEach(type => {
-        const isChecked = this.activeFilters.consumerType === type;
+        const isChecked = this.activeFilters.consumerType.includes(type);
         addRow({
           label: `${isChecked ? '☑' : '☐'} ${consumerNames[type] || type}`,
           kind: 'consumer',
@@ -1935,7 +2043,7 @@ class TerminalKitStatusDisplay {
 
     addRow({ label: '', kind: 'spacer' });
     addRow({ label: 'Помещения:', kind: 'title' });
-    const siteAllChecked = this.activeFilters.site === null;
+    const siteAllChecked = this.activeFilters.site.length === 0;
     addRow({
       label: `${siteAllChecked ? '☑' : '☐'} Все`,
       kind: 'site',
@@ -1943,7 +2051,7 @@ class TerminalKitStatusDisplay {
       selectable: true,
     });
     this.sites.forEach(site => {
-      const isChecked = this.activeFilters.site === site.name;
+      const isChecked = this.activeFilters.site.includes(site.name);
       addRow({
         label: `${isChecked ? '☑' : '☐'} ${site.name}`,
         kind: 'site',
@@ -1969,18 +2077,47 @@ class TerminalKitStatusDisplay {
 
   applyFilterRow(row) {
     if (!row) return;
+    
+    // Зачем: Toggle логика - если фильтр уже применен, снимаем его (Space), иначе применяем
     if (row.kind === 'category') {
-      this.activeFilters.category = row.value;
-      if (row.value !== null) {
-        this.activeFilters.consumerType = null;
+      if (row.value === null) {
+        // "Все" - сбрасываем все категории
+        this.activeFilters.category = [];
+      } else {
+        // Toggle: если уже есть в массиве, удаляем, иначе добавляем
+        const index = this.activeFilters.category.indexOf(row.value);
+        if (index >= 0) {
+          this.activeFilters.category.splice(index, 1);
+        } else {
+          this.activeFilters.category.push(row.value);
+        }
       }
     } else if (row.kind === 'consumer') {
-      this.activeFilters.consumerType = row.value;
-      if (row.value !== null) {
-        this.activeFilters.category = null;
+      if (row.value === null) {
+        // "Все" - сбрасываем все типы потребителей
+        this.activeFilters.consumerType = [];
+      } else {
+        // Toggle: если уже есть в массиве, удаляем, иначе добавляем
+        const index = this.activeFilters.consumerType.indexOf(row.value);
+        if (index >= 0) {
+          this.activeFilters.consumerType.splice(index, 1);
+        } else {
+          this.activeFilters.consumerType.push(row.value);
+        }
       }
     } else if (row.kind === 'site') {
-      this.activeFilters.site = row.value;
+      if (row.value === null) {
+        // "Все" - сбрасываем все помещения
+        this.activeFilters.site = [];
+      } else {
+        // Toggle: если уже есть в массиве, удаляем, иначе добавляем
+        const index = this.activeFilters.site.indexOf(row.value);
+        if (index >= 0) {
+          this.activeFilters.site.splice(index, 1);
+        } else {
+          this.activeFilters.site.push(row.value);
+        }
+      }
     }
     // Пересобираем строки фильтров для обновления чекбоксов
     this.buildFilterRows();
@@ -2017,32 +2154,27 @@ class TerminalKitStatusDisplay {
     }
     
     this.devices = this.allDevices.filter(device => {
-      // Фильтр по категории
-      if (this.activeFilters.category !== null) {
-        // Если выбрана категория, показываем только устройства этой категории
-        if (device.category !== this.activeFilters.category) {
+      // Фильтр по категории (мультифильтр: если массив не пуст, проверяем вхождение)
+      if (this.activeFilters.category.length > 0) {
+        // Если выбраны категории, показываем только устройства этих категорий
+        if (!this.activeFilters.category.includes(device.category)) {
           return false;
         }
-        // Если выбрана категория "Потребитель", показываем всех потребителей
-        // Если выбрана другая категория, потребители уже исключены выше
       }
       
-      // Фильтр по типу потребителя (работает только если выбрана категория "Потребитель" или не выбрана категория)
-      if (this.activeFilters.consumerType !== null) {
-        // Показываем только потребителей выбранного типа
-        if (device.category !== 'Потребитель' || device.type !== this.activeFilters.consumerType) {
+      // Фильтр по типу потребителя (мультифильтр: если массив не пуст, проверяем вхождение)
+      if (this.activeFilters.consumerType.length > 0) {
+        // Показываем только потребителей выбранных типов
+        if (device.category !== 'Потребитель' || !this.activeFilters.consumerType.includes(device.type)) {
           return false;
         }
-      } else if (this.activeFilters.category === null && this.activeFilters.consumerType === null) {
-        // Если не выбрана категория и не выбран тип потребителя, показываем все устройства
-        // Это обрабатывается автоматически через return true в конце
       }
       
-      // Фильтр по помещению
-      if (this.activeFilters.site !== null) {
+      // Фильтр по помещению (мультифильтр: если массив не пуст, проверяем вхождение)
+      if (this.activeFilters.site.length > 0) {
         // Строгое сравнение с учетом null/undefined
         const deviceSite = device.site || null;
-        if (deviceSite !== this.activeFilters.site) {
+        if (!this.activeFilters.site.includes(deviceSite)) {
           return false;
         }
       }
@@ -2103,6 +2235,75 @@ class TerminalKitStatusDisplay {
     const maxScroll = Math.max(0, this.devices.length - this.tableVisibleRows);
     if (this.tableScroll > maxScroll) {
       this.tableScroll = maxScroll;
+    }
+  }
+  
+  updateFilterScroll() {
+    // Зачем: Обновляем прокрутку панели фильтров так, чтобы выбранная строка была видна
+    // filterIndex - это индекс в filterSelectable, нужно преобразовать в индекс в filterRows
+    if (this.filterIndex < 0) {
+      this.filterIndex = 0;
+    } else if (this.filterIndex >= this.filterSelectable.length) {
+      this.filterIndex = Math.max(0, this.filterSelectable.length - 1);
+    }
+    
+    // Получаем индекс строки в filterRows для выбранного фильтра
+    const selectedRowIndex = this.filterIndex >= 0 && this.filterIndex < this.filterSelectable.length
+      ? this.filterSelectable[this.filterIndex]
+      : 0;
+    
+    // Обновляем filterScroll так, чтобы выбранная строка была видна
+    if (selectedRowIndex < this.filterScroll) {
+      this.filterScroll = selectedRowIndex;
+    } else if (selectedRowIndex >= this.filterScroll + this.filterVisibleRows) {
+      this.filterScroll = Math.max(0, selectedRowIndex - this.filterVisibleRows + 1);
+    }
+    
+    // Проверяем, что filterScroll не выходит за границы
+    const maxScroll = Math.max(0, this.filterRows.length - this.filterVisibleRows);
+    if (this.filterScroll > maxScroll) {
+      this.filterScroll = maxScroll;
+    }
+    
+    // Дополнительная проверка: если filterScroll указывает на строку, которая не selectable,
+    // и она находится в начале видимой области, нужно скорректировать
+    if (this.filterScroll > 0 && this.filterScroll < this.filterRows.length) {
+      const firstVisibleRow = this.filterRows[this.filterScroll];
+      // Если первая видимая строка не selectable и мы не на первой строке, немного сдвигаем
+      if (!firstVisibleRow || !firstVisibleRow.selectable) {
+        // Ищем ближайшую selectable строку выше
+        for (let i = this.filterScroll - 1; i >= 0; i--) {
+          if (this.filterRows[i] && this.filterRows[i].selectable) {
+            // Проверяем, что выбранная строка все еще видна
+            if (selectedRowIndex >= i && selectedRowIndex < i + this.filterVisibleRows) {
+              this.filterScroll = i;
+              break;
+            }
+          }
+        }
+      }
+    }
+  }
+  
+  updateDeviceInfoScroll() {
+    // Зачем: Обновляем прокрутку панели параметров устройства
+    // Пока что просто проверяем границы (в будущем можно добавить навигацию по строкам)
+    if (this.selectedIndex < 0 || this.selectedIndex >= this.devices.length) {
+      this.deviceInfoScroll = 0;
+      return;
+    }
+    
+    const device = this.devices[this.selectedIndex];
+    const deviceInfo = this.getDeviceInfoText(device);
+    const lines = deviceInfo.split('\n');
+    
+    // Проверяем, что deviceInfoScroll не выходит за границы
+    const maxScroll = Math.max(0, lines.length - this.deviceInfoVisibleRows);
+    if (this.deviceInfoScroll > maxScroll) {
+      this.deviceInfoScroll = maxScroll;
+    }
+    if (this.deviceInfoScroll < 0) {
+      this.deviceInfoScroll = 0;
     }
   }
   
@@ -2293,6 +2494,9 @@ class TerminalKitStatusDisplay {
       this.drawPanelBox(this.leftX, startY, this.leftWidth, height, 'Фильтры', this.activePanel === 0);
     }
 
+    // Обновляем скроллинг перед рендерингом
+    this.updateFilterScroll();
+
     // Получаем индекс выбранной строки с проверкой границ
     // filterIndex - это индекс в массиве filterSelectable
     // selectedRowIndex - это индекс строки в массиве filterRows
@@ -2301,20 +2505,30 @@ class TerminalKitStatusDisplay {
       : null;
 
     const maxY = startY + height - 2; // Учитываем рамку снизу
-    const maxVisibleRows = Math.min(this.filterRows.length, maxY - startY + 1); // Ограничиваем количество видимых строк (startY включительно)
+    const maxDataRows = maxY - startY - 1; // Максимальное количество строк данных (минус верхняя рамка)
+    const actualVisibleRows = Math.min(this.filterVisibleRows, maxDataRows); // Ограничиваем реальным доступным пространством
+    
+    // Рендерим видимые строки с учетом скроллинга
+    // filterScroll - это индекс в filterRows (все строки, включая заголовки)
+    const visibleRows = this.filterRows.slice(this.filterScroll, this.filterScroll + actualVisibleRows);
+    
     let y = startY + 1; // Начинаем с первой строки после верхней рамки
-    this.filterRows.slice(0, maxVisibleRows).forEach((row, rowIndex) => {
+    visibleRows.forEach((row, idx) => {
       if (y > maxY) return; // Дополнительная проверка границ
+      
+      const rowIndexInFilterRows = this.filterScroll + idx;
       term.moveTo(this.leftX + 1, y); // +1 для отступа от левой границы
       y++; // Увеличиваем Y после использования
+      
       // Выделяем строку только если она selectable, совпадает с выбранным индексом и панель активна
-      // Проверяем, что rowIndex точно соответствует selectedRowIndex из filterSelectable
-      const isHighlighted = row.selectable && selectedRowIndex !== null && rowIndex === selectedRowIndex && this.activePanel === 0;
+      const isHighlighted = row.selectable && selectedRowIndex !== null && rowIndexInFilterRows === selectedRowIndex && this.activePanel === 0;
+      
       if (isHighlighted) {
         term.bgBrightBlue.black();
       } else {
         term.styleReset();
       }
+      
       const labelWidth = this.leftWidth - 2; // Ширина минус рамки
       const label = row.label.substring(0, labelWidth);
       term(label);
@@ -2468,10 +2682,18 @@ class TerminalKitStatusDisplay {
     // Разбиваем текст на строки и выводим с подсветкой только измененных значений
     const lines = deviceInfo.split('\n');
     const maxY = startY + height - 2; // Учитываем рамку
-    const contentHeight = maxY - startY - 1;
-    lines.slice(0, contentHeight).forEach((line, idx) => {
+    const maxDataRows = maxY - startY - 1; // Максимальное количество строк данных (минус верхняя рамка)
+    const actualVisibleRows = Math.min(this.deviceInfoVisibleRows, maxDataRows); // Ограничиваем реальным доступным пространством
+    
+    // Обновляем скроллинг перед рендерингом
+    this.updateDeviceInfoScroll();
+    
+    // Рендерим видимые строки с учетом скроллинга
+    const visibleLines = lines.slice(this.deviceInfoScroll, this.deviceInfoScroll + actualVisibleRows);
+    visibleLines.forEach((line, idx) => {
       const y = startY + 1 + idx;
       if (y > maxY) return; // Проверка границ для предотвращения выхода за рамки экрана
+      const lineIndex = this.deviceInfoScroll + idx; // Реальный индекс строки в массиве lines
       term.moveTo(this.rightX + 1, y);
       term.styleReset();
       
@@ -2564,7 +2786,8 @@ class TerminalKitStatusDisplay {
     });
     
     // Очищаем оставшиеся строки
-    for (let y = startY + 1 + lines.length; y <= maxY; y++) {
+    const renderedLines = Math.min(visibleLines.length, actualVisibleRows);
+    for (let y = startY + 1 + renderedLines; y <= maxY; y++) {
       term.moveTo(this.rightX + 1, y);
       term.styleReset();
       term(' '.repeat(this.rightWidth - 2));
@@ -2734,6 +2957,8 @@ class TerminalKitStatusDisplay {
   // Обновляем панель параметров устройства
   // Эта функция вызывается при изменении выбранного устройства
   updateDeviceInfo() {
+    // Сбрасываем скроллинг при смене устройства
+    this.deviceInfoScroll = 0;
     // Просто перерисовываем панель параметров через renderDeviceInfo
     // которая вызывается внутри render()
     // Но для оптимизации можно перерисовать только панель параметров
