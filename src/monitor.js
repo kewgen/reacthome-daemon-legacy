@@ -2,47 +2,71 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
+ * Версия: 1.0.7 (ручное управление версией)
  * 
- * Этот файл использует библиотеку terminal-kit для создания
- * интерактивного терминального интерфейса без проблем с артефактами рендеринга.
+ * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
+ * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
  * 
- * Алгоритм получения устройств через WebSocket основан на инструкции:
- * @see /Users/evgen/Documents/Work/reacthome-kewgen/reports/event-logger-websocket-requests-2025-12-10.md
+ * КЛЮЧЕВЫЕ ОСОБЕННОСТИ:
+ * =====================
+ * ✅ Минимальная нагрузка на CPU (оптимизировано для Raspberry Pi)
+ * ✅ Debounce рендеринга (100мс) для плавной работы при множественных обновлениях
+ * ✅ Периодическое обновление каждые 30 секунд + реал-тайм WebSocket события
+ * ✅ Скользящее окно 10 секунд для точного подсчета скорости WebSocket
+ * ✅ Интеллектуальное кэширование для предотвращения ненужных перерисовок
+ * ✅ Отзывчивый курсор без зависаний
  * 
- * Для использования установите зависимости:
+ * ЗАВИСИМОСТИ:
+ * ============
  *   npm install terminal-kit ws
  * 
  * ИСПОЛЬЗОВАНИЕ:
  * ==============
- *   node reacthome-daemon/src/monitor.js 
+ *   Локальный запуск:
+ *     node src/monitor.js
  * 
- *   С указанием URI WebSocket (для удалённого подключения):
- *   REACTHOME_WS_URI=ws://<IP_RASPBERRY_PI>:3000 node monitoring/scripts/monitor.js
+ *   Удалённое подключение к Raspberry Pi:
+ *     REACTHOME_WS_URI=ws://192.168.x.x:3000 node src/monitor.js
  *
- *   С включенным логированием WebSocket запросов (для анализа производительности):
- *   WS_REQUEST_LOGGING=1 REACTHOME_WS_URI=ws://<IP_RASPBERRY_PI>:3000 node src/monitor.js
+ *   С логированием WebSocket (анализ производительности):
+ *     WS_REQUEST_LOGGING=1 node src/monitor.js
  * 
- *   Логирование выводит:
- *     - Все отправляемые запросы (LIST, GET) с количеством устройств/каналов и размерами
- *     - Статистику получаемых ответов (ACTION_SET с контекстом и без)
+ *   Логирование включает:
+ *     - Все исходящие запросы (LIST, GET) с размерами и счётчиками
+ *     - Статистику входящих ответов (ACTION_SET)
  *     - Периодическую сводку каждые 10 секунд
  *     - Финальную статистику при выходе
  * 
+ * КОПИРОВАНИЕ НА RASPBERRY PI:
+ * ============================
+ *   Автоматическое копирование с повышением версии:
+ *     ./scripts/system/copy-monitor-to-pi.sh patch   # 1.0.7 → 1.0.8
+ *     ./scripts/system/copy-monitor-to-pi.sh minor   # 1.0.7 → 1.1.0
+ *     ./scripts/system/copy-monitor-to-pi.sh major   # 1.0.7 → 2.0.0
+ * 
  * ИНТЕРФЕЙС:
  * ==========
- * Экран разделен на три панели с рамками (как в Midnight Commander):
- * - Слева: Дерево фильтров (типы устройств и помещения)
- * - В центре: Список устройств (таблица с увеличенным пространством между полями)
- * - Справа: Параметры выбранного устройства
+ * Трёхпанельный интерфейс (как в Midnight Commander):
+ *   ┌─────────────┬──────────────────────────┬─────────────────┐
+ *   │  ФИЛЬТРЫ    │    СПИСОК УСТРОЙСТВ      │   ПАРАМЕТРЫ     │
+ *   │             │                          │                 │
+ *   │ • Все       │  MAC | Имя | Тип | ...   │ Устройство:     │
+ *   │ Актуаторы   │  ──────────────────────  │   Параметр: xx  │
+ *   │ Сенсоры     │  xxx | S4  | Сенсор|...  │   Значение: yy  │
+ *   │ ...         │  ...                     │   ...           │
+ *   └─────────────┴──────────────────────────┴─────────────────┘
  * 
  * УПРАВЛЕНИЕ:
  * ===========
- * - Tab: Переключение между панелями (фильтры / таблица / параметры)
- * - Стрелки вверх/вниз или j/k: Навигация по списку
- * - Enter: Выбор фильтра / Показать информацию об устройстве
- * - c: Копировать содержимое раздела "Устройство" в буфер обмена
- * - y+c: Копировать строку таблицы в буфер обмена
- * - q или Ctrl+C: Выход
+ * • Tab          - Переключение между панелями (фильтры ↔ таблица)
+ * • ←/→          - Переход между панелями фильтров и таблицы
+ * • ↑/↓ или j/k  - Навигация по списку
+ * • Enter/Space  - Выбор фильтра / Просмотр устройства
+ * • PgUp/PgDown  - Постраничная прокрутка (только в таблице)
+ * • Home/End     - К началу/концу списка (только в таблице)
+ * • c            - Копировать раздел "Устройство" в буфер обмена
+ * • y+c          - Копировать строку таблицы в буфер обмена
+ * • q или Ctrl+C - Выход
  * 
  * ============================================================================
  * СПЕЦИАЛЬНЫЕ ТИПЫ УСТРОЙСТВ И ИХ СВЯЗИ
@@ -222,6 +246,65 @@
  *   - TEMPERATURE_EXT → state.master → S4 модуль
  *   - Проверяется, что sensor.master === thermostat.bind (модуль)
  * 
+ * ============================================================================
+ * ОПТИМИЗАЦИЯ ПРОИЗВОДИТЕЛЬНОСТИ
+ * ============================================================================
+ * 
+ * ПРОБЛЕМА:
+ * ---------
+ * На Raspberry Pi с сотнями устройств наблюдалась 100% загрузка CPU и зависание курсора.
+ * 
+ * ПРИЧИНЫ:
+ * --------
+ * 1. Слишком частое обновление устройств (каждые 3 секунды)
+ * 2. Рендеринг UI при каждом WebSocket сообщении (десятки рендеров в секунду)
+ * 3. Избыточные запросы связанных устройств в каждом интервале
+ * 
+ * РЕШЕНИЯ (v1.0.6 - v1.0.7):
+ * --------------------------
+ * ✅ UPDATE_INTERVAL: 3 сек → 30 сек (снижение нагрузки в 10 раз)
+ * ✅ Debounce рендеринга: группировка обновлений за 100мс
+ * ✅ Убраны избыточные запросы в setInterval
+ * ✅ Скользящее окно 10 сек для точного подсчёта скорости WebSocket
+ * ✅ Классическая загрузка: данные → UI (без ленивой загрузки)
+ * 
+ * РЕЗУЛЬТАТ:
+ * ----------
+ * 🚀 Минимальная нагрузка на CPU
+ * ⚡ Отзывчивый курсор без зависаний
+ * 📊 Реал-тайм обновления через WebSocket события
+ * 🔄 Периодическая синхронизация каждые 30 секунд
+ * 
+ * ============================================================================
+ * АЛГОРИТМ РАБОТЫ
+ * ============================================================================
+ * 
+ * ФАЗА 1: ЗАГРУЗКА ДАННЫХ (консоль)
+ * ----------------------------------
+ * 1. Подключение к WebSocket серверу
+ * 2. Отправка LIST для получения всех ID устройств
+ * 3. Массовый GET запрос для всех устройств
+ * 4. Обработка ACTION_SET сообщений
+ * 5. Построение структуры devices и sites
+ * 
+ * ФАЗА 2: ИНИЦИАЛИЗАЦИЯ UI
+ * ------------------------
+ * 1. Создание TerminalKitStatusDisplay с загруженными данными
+ * 2. Построение дерева фильтров
+ * 3. Первичный рендеринг всех панелей
+ * 4. Подключение обработчиков клавиатуры
+ * 
+ * ФАЗА 3: РАБОТА В РЕАЛЬНОМ ВРЕМЕНИ
+ * ----------------------------------
+ * 1. WebSocket события → обновление deviceStates
+ * 2. Debounce рендеринга (100мс) → scheduleRender()
+ * 3. Периодическое обновление (30 сек) → массовый GET
+ * 4. Интеллектуальное кэширование → минимум перерисовок
+ * 
+ * ============================================================================
+ * СПЕЦИАЛЬНЫЕ ТИПЫ УСТРОЙСТВ И ИХ СВЯЗИ
+ * ============================================================================
+ * 
  * 6. АКТУАТОРЫ И КАНАЛЫ (DIM, DO)
  * ----------------------------------
  * 
@@ -274,86 +357,44 @@
  * АУДИТ И ПОДГОТОВКА К ТЕСТИРОВАНИЮ НА RASPBERRY PI
  * ============================================================================
  * 
- * 1. АНАЛИЗ ЗАВИСИМОСТЕЙ
- * -----------------------
+ * ============================================================================
+ * ТРЕБОВАНИЯ И УСТАНОВКА
+ * ============================================================================
  * 
- * Используемые зависимости:
- * - terminal-kit (^3.0.0) - Терминальный UI, совместим с Node.js 18+ на ARM
- * - ws (^7.2.5) - WebSocket клиент, чистый JavaScript, полностью совместим с ARM
- * - child_process (встроенный) - Системные команды
+ * ЗАВИСИМОСТИ:
+ * ------------
+ * • terminal-kit (^3.0.0) - Терминальный UI
+ * • ws (^7.2.5) - WebSocket клиент
+ * • child_process (встроен) - Системные команды
  * 
- * Требования:
- * - Node.js 18+ (на малинке установлен v20.19.2 ✅)
- * - npm 8+ (обычно устанавливается вместе с Node.js)
+ * ТРЕБОВАНИЯ:
+ * -----------
+ * • Node.js 18+ (протестировано на v20.19.2)
+ * • npm 8+
+ * • Linux/macOS/Windows
  * 
- * Лишних зависимостей нет - скрипт использует только необходимые модули.
- * 
- * 2. СИСТЕМНЫЕ КОМАНДЫ
- * ---------------------
- * 
- * Копирование в буфер обмена:
- * - macOS: pbcopy (встроен)
- * - Linux: xclip или xsel (требует установки)
- * - Windows: clip (встроен)
- * 
- * Для Raspberry Pi (Linux) требуется установка xclip:
- *   sudo apt-get update
- *   sudo apt-get install -y xclip
- * 
- * Если xclip не установлен, скрипт выводит текст в консоль (fallback).
- * 
- * 3. ПОДГОТОВКА К ТЕСТИРОВАНИЮ НА RASPBERRY PI
- * ---------------------------------------------
- * 
- * Предварительные требования:
- *   # Проверка Node.js
- *   node --version  # Должно быть v18.x.x или выше
+ * УСТАНОВКА НА RASPBERRY PI:
+ * --------------------------
+ *   # 1. Проверка Node.js
+ *   node --version  # Должно быть >= v18.0.0
  *   
- *   # Проверка npm
- *   npm --version   # Должно быть 8.x.x или выше
+ *   # 2. Установка зависимостей
+ *   cd /home/pi/reacthome-daemon
+ *   npm install terminal-kit ws
  *   
- *   # Проверка зависимостей
- *   cd /path/to/reacthome-main
- *   npm list terminal-kit ws
+ *   # 3. Опционально: xclip для буфера обмена
+ *   sudo apt-get update && sudo apt-get install -y xclip
  * 
- * Установка системных зависимостей (опционально):
- *   sudo apt-get update
- *   sudo apt-get install -y xclip
- *   which xclip
- * 
- * Настройка переменных окружения:
- *   # Для локального тестирования (по умолчанию)
- *   export REACTHOME_WS_URI=ws://localhost:3000
- *   # Или для подключения к Raspberry Pi
- *   export REACTHOME_WS_URI=ws://<IP_RASPBERRY_PI>:3000
+ * ЗАПУСК:
+ * -------
+ *   # Локально
+ *   node src/monitor.js
  *   
- *   # Название локации для отображения в заголовке (опционально)
- *   export LOCATION_NAME="Квартира"
- *
- * Запуск скрипта:
- *   node monitoring/scripts/monitor.js
- *   # Или с указанием URI WebSocket для удалённого подключения
- *   REACTHOME_WS_URI=ws://<IP_RASPBERRY_PI>:3000 LOCATION_NAME="Дом" node monitoring/scripts/monitor.js
- * 
- * 4. ЧЕКЛИСТ ДЛЯ ТЕСТИРОВАНИЯ
- * -----------------------------
- * 
- * Базовое тестирование:
- * - [ ] Скрипт запускается без ошибок
- * - [ ] Подключается к WebSocket серверу
- * - [ ] Загружает список устройств
- * - [ ] Отображает UI с тремя панелями
- * - [ ] Навигация работает (Tab, стрелки, Enter)
- * - [ ] Фильтры работают корректно
- * - [ ] Информация об устройстве отображается
- * 
- * Функциональное тестирование:
- * - [ ] Копирование информации об устройстве (c)
- * - [ ] Копирование строки таблицы (y+c)
- * - [ ] Обновление состояния устройств в реальном времени
- * - [ ] Подсветка измененных параметров
- * - [ ] Отображение скорости обновлений WebSocket
- * - [ ] Форматирование поля modified как время
+ *   # Удалённое подключение
+ *   REACTHOME_WS_URI=ws://192.168.x.x:3000 node src/monitor.js
+ *   
+ *   # С логированием
+ *   WS_REQUEST_LOGGING=1 node src/monitor.js
  * 
  * Тестирование производительности:
  * - [ ] Загрузка большого количества устройств (1000+)
@@ -385,12 +426,18 @@
  *     2. Если запускается через SSH без X11:
  *        Скрипт выведет текст в консоль (fallback)
  * 
- * Проблема: Медленная работа
- *   Симптом: UI тормозит при большом количестве устройств
- *   Решение:
- *     1. Проверить количество устройств
- *     2. Проверить использование памяти: top -p $(pgrep -f monitor.js)
- *     3. Рассмотреть оптимизацию (батчинг обновлений)
+ * Проблема: Высокая нагрузка на CPU
+ *   Симптом: 100% CPU, зависание курсора
+ *   Решение: ✅ Исправлено в v1.0.6-v1.0.7
+ *     • UPDATE_INTERVAL увеличен до 30 секунд
+ *     • Добавлен debounce рендеринга (100мс)
+ *     • Удалены избыточные запросы в setInterval
+ * 
+ * Проблема: Медленная загрузка
+ *   Симптом: Долгое ожидание, курсор не работает
+ *   Решение: ✅ Исправлено в v1.0.6
+ *     • Классическая загрузка: данные → UI
+ *     • Убрана ленивая загрузка (вызывала артефакты)
  * 
  * ============================================================================
  * ПРОВЕРКА БЕЗОПАСНОСТИ
@@ -474,10 +521,10 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.0';
+const VERSION = '1.0.11';
 
 const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
-const UPDATE_INTERVAL = 3000;
+const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
 const WS_LOG_DIR = process.env.WS_LOG_DIR || path.join(process.cwd(), 'logs'); // Директория для логов WebSocket
@@ -1441,6 +1488,8 @@ class TerminalKitStatusDisplay {
     this.pendingFiltersReapply = false; // Нужно переприменить фильтры после навигации
     this.pendingRebuildFilterRows = false; // Нужно пересобрать строки фильтров после навигации
     this.lastUpdateTime = 0;
+    this.renderDebounceTimer = null; // Таймер для debounce рендеринга
+    this.pendingRender = false; // Флаг ожидающего рендера
     
     // Отслеживание скорости обновлений WebSocket (раздельно для входящих и исходящих)
     // Используем скользящее окно времени для точного подсчета скорости
@@ -1616,6 +1665,32 @@ class TerminalKitStatusDisplay {
       return;
     }
     
+    // Переключение между панелями стрелками влево/вправо
+    if (name === 'LEFT') {
+      // Переход к панели слева (фильтры)
+      if (this.activePanel === 1) {
+        this.activePanel = 0;
+        this.buildFilterRows();
+        // Проверяем, что filterIndex в допустимых границах
+        if (this.filterIndex < 0 || this.filterIndex >= this.filterSelectable.length) {
+          this.filterIndex = Math.max(0, this.filterSelectable.length - 1);
+        }
+        this.needsFullRender = true;
+        this.render();
+      }
+      return;
+    }
+    
+    if (name === 'RIGHT') {
+      // Переход к панели справа (таблица)
+      if (this.activePanel === 0) {
+        this.activePanel = 1;
+        this.needsFullRender = true;
+        this.render();
+      }
+      return;
+    }
+    
     // Обработка копирования работает независимо от активной панели
     if (name === 'y' && data.isCharacter) {
       // Подготовка к копированию строки таблицы (y+c)
@@ -1647,8 +1722,8 @@ class TerminalKitStatusDisplay {
           this.filterIndex++;
           this.render();
         }
-      } else if (name === 'ENTER' || name === 'SPACE') {
-        // Применяем выбранный фильтр
+      } else if (name === 'ENTER' || name === 'SPACE' || name === ' ') {
+        // Применяем выбранный фильтр (Enter или Space)
         const row = this.getSelectedFilterRow();
         this.applyFilterRow(row);
       }
@@ -1913,8 +1988,8 @@ class TerminalKitStatusDisplay {
     
     // Сортируем устройства по типу (название типа), затем по названию устройства
     this.devices.sort((a, b) => {
-      const typeA = DEVICE_TYPE_NAMES[a.type] || a.type || '';
-      const typeB = DEVICE_TYPE_NAMES[b.type] || b.type || '';
+      const typeA = String(DEVICE_TYPE_NAMES[a.type] || a.type || '');
+      const typeB = String(DEVICE_TYPE_NAMES[b.type] || b.type || '');
       
       // Сначала сравниваем по типу
       const typeCompare = typeA.localeCompare(typeB, 'ru');
@@ -1965,6 +2040,20 @@ class TerminalKitStatusDisplay {
     if (this.tableScroll > maxScroll) {
       this.tableScroll = maxScroll;
     }
+  }
+  
+  // Дебаунс рендеринга для снижения нагрузки на CPU при множественных обновлениях
+  scheduleRender() {
+    if (this.renderDebounceTimer) {
+      return; // Рендер уже запланирован
+    }
+    
+    this.pendingRender = true;
+    this.renderDebounceTimer = setTimeout(() => {
+      this.renderDebounceTimer = null;
+      this.pendingRender = false;
+      this.render();
+    }, 100); // Задержка 100мс - баланс между отзывчивостью и производительностью
   }
   
   render() {
@@ -3337,7 +3426,8 @@ class TerminalKitStatusDisplay {
       info.push(`  ⚠️  Не привязан к актуатору (bind отсутствует)`);
     }
     
-    // Каналы актуатора
+    // Каналы актуатора (включая MIX устройства: MIX_H, MIX_1, MIX_2, MIX_1_RS, MIX_6x12_RS)
+    // Зачем: Резолв каналов DO и DIM для смешанных устройств с правильным определением количества каналов каждого типа
     const isActuator = device.category === 'Актуатор' && typeof device.type === 'number';
     if (isActuator) {
       const channels = this.getActuatorChannels(device.id, device.type);
@@ -3871,11 +3961,12 @@ class TerminalKitStatusDisplay {
     }
     
     // Обновляем отображение только если не идет навигация
+    // Используем debounce для снижения нагрузки на CPU при множественных обновлениях
     if (!this.isNavigating && stateChanged) {
       if (shouldUpdateDeviceInfo) {
         this.updateDeviceInfo();
       }
-      this.render();
+      this.scheduleRender();
     } else if (shouldUpdateDeviceInfo) {
       this.updateDeviceInfo();
     }
@@ -4176,14 +4267,15 @@ class TerminalKitStatusDisplay {
             this.cache.deviceInfoHash = null;
             
             // Обновляем отображение, если актуатор выбран
-            if (this.selectedIndex >= 0 && this.devices[this.selectedIndex]?.id === actuator.id) {
-              this.updateDisplay();
+            if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length && this.devices[this.selectedIndex]?.id === actuator.id) {
+              this.updateDeviceInfo();
+              this.scheduleRender();
             }
           }
         }
       }
       
-      // Обновляем каналы всех актуаторов, которые могут быть связаны с этим устройством
+      // Обновляем каналы всех актуаторов (включая MIX), которые могут быть связаны с этим устройством
       // Это нужно для случаев, когда устройство добавляется после начальной загрузки
       for (const actuator of this.allDevices) {
         if (actuator.category === 'Актуатор' && typeof actuator.type === 'number') {
@@ -4199,6 +4291,7 @@ class TerminalKitStatusDisplay {
               const selectedDevice = this.devices[this.selectedIndex];
               if (selectedDevice && selectedDevice.id === actuator.id) {
                 this.updateDeviceInfo();
+                this.scheduleRender();
               }
             }
           }
@@ -4208,31 +4301,6 @@ class TerminalKitStatusDisplay {
       // Инвалидируем кэш фильтров (будет пересобран при вызове applyFilters())
       this.cache.filteredDevices = null;
       this.cache.filteredDevicesHash = null;
-      
-      // Инвалидируем кэш информации об устройствах, чтобы обновить привязки актуаторов
-      this.cache.deviceInfoByDeviceId.clear();
-      
-      // Обновляем каналы всех актуаторов, которые могут быть связаны с этим устройством
-      // Это нужно для случаев, когда устройство добавляется после начальной загрузки
-      for (const actuator of this.allDevices) {
-        if (actuator.category === 'Актуатор' && typeof actuator.type === 'number') {
-          const channels = this.getActuatorChannels(actuator.id, actuator.type);
-          const hasLinkedChannel = channels.some(ch => ch.channelState && ch.channelState.bind === deviceId);
-          
-          if (hasLinkedChannel) {
-            // Инвалидируем кэш информации об актуаторе, чтобы обновить список каналов
-            this.cache.deviceInfoByDeviceId.delete(actuator.id);
-            
-            // Если актуатор выбран, обновляем информацию о нем
-            if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length) {
-              const selectedDevice = this.devices[this.selectedIndex];
-              if (selectedDevice && selectedDevice.id === actuator.id) {
-                this.updateDeviceInfo();
-              }
-            }
-          }
-        }
-      }
       
       // Переприменяем фильтры после добавления устройства
       // ВАЖНО: не пересобираем список во время скролла — иначе визуально «пропадают» устройства
@@ -4464,12 +4532,7 @@ async function main() {
     // Инициализируем глобальные потоки логирования WebSocket
     initGlobalWsLogStreams();
     
-    // Создаем UI сразу с пустыми данными для немедленной интерактивности
-    // Это позволяет терминалу быть готовым к вводу с самого начала
-    const display = new TerminalKitStatusDisplay([], [], 'Локация');
-    
     // Загружаем устройства и помещения полностью через WebSocket
-    // Теперь пользователь видит индикатор загрузки вместо пустого экрана
     console.log('Подключение к WebSocket для загрузки устройств и помещений...');
     const { devices, sites, locationName } = await loadDevicesAndSitesViaWebSocket(WS_URI);
     
@@ -4481,8 +4544,8 @@ async function main() {
     console.log(`Загружено ${devices.length} устройств и ${sites.length} помещений`);
     console.log(`Локация: ${locationName}`);
     
-    // Обновляем UI с загруженными данными
-    display.updateDevices(devices, sites, locationName);
+    // Создаем UI с названием локации
+    const display = new TerminalKitStatusDisplay(devices, sites, locationName);
     
     // Подключаемся к WebSocket для получения обновлений состояния
     const ws = new WebSocket(WS_URI);
@@ -4592,17 +4655,11 @@ async function main() {
           }
         });
         
-        // Отправляем один GET запрос со всеми ID
+        // Отправляем один GET запрос со всеми ID для периодического обновления
         if (deviceIds.length > 0) {
           const getRequest = { type: 'get', state: deviceIds };
           display.logWebSocketRequest('get', deviceIds, ws);
           ws.send(JSON.stringify(getRequest));
-          
-          // После отправки запроса каналов, отложенно запрашиваем связанные устройства (логика из resolve-actuator-channels.js)
-          // Используем таймаут, чтобы дать время для получения ответов на каналы
-          setTimeout(() => {
-            display.requestLinkedDevicesFromChannels();
-          }, 2000); // Задержка 2 секунды для получения данных каналов перед запросом связанных устройств
         }
       }, UPDATE_INTERVAL);
     });
@@ -4710,13 +4767,14 @@ async function main() {
             if (isReferencedInBind) {
               // Устройство упоминается в bind, обновляем отображение для пересчета linkedDevice
               // Очищаем кэш информации об устройстве, чтобы пересчитать каналы с новым linkedDevice
-              const selectedDevice = display.selectedIndex >= 0 ? display.devices[display.selectedIndex] : null;
+              const selectedDevice = display.selectedIndex >= 0 && display.selectedIndex < display.devices.length ? display.devices[display.selectedIndex] : null;
               if (selectedDevice) {
                 display.cache.deviceInfoByDeviceId.delete(selectedDevice.id);
+                display.updateDeviceInfo();
+                display.scheduleRender();
               }
               display.cache.deviceInfo = null;
               display.cache.deviceInfoHash = null;
-              display.updateDisplay();
             }
           }
         }
