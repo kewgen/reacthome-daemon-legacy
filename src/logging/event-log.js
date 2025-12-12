@@ -244,6 +244,25 @@ const isActuatorDevice = (id) => {
   }
   
   // Для корневых устройств - проверка по типу
+  // Зачем: поддержка как числовых, так и строковых типов устройств
+  
+  // Строковые типы актуаторов (light_220, socket_220, и т.д.)
+  if (typeof deviceType === 'string') {
+    const actuatorStringTypes = [
+      'light_220',
+      'socket_220',
+      'fan',
+      'ac',
+      'warm_floor',
+      'valve_water',
+      'valve_heating',
+      'boiler',
+      'pump'
+    ];
+    return actuatorStringTypes.includes(deviceType.toLowerCase());
+  }
+  
+  // Числовые типы актуаторов
   const actuatorTypes = [
     0x0a, // DEVICE_TYPE_DO8
     0x0b, // DEVICE_TYPE_DO16
