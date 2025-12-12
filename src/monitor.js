@@ -2419,7 +2419,8 @@ class TerminalKitStatusDisplay {
   }
   
   // Рисуем рамку вокруг панели с заголовком (цветовая схема Midnight Commander)
-  drawPanelBox(x, y, width, height, title, isActive) {
+  // scrollInfo: { current, total } - информация о скроллинге для индикатора
+  drawPanelBox(x, y, width, height, title, isActive, scrollInfo = null) {
     // Верхняя граница с заголовком
     term.moveTo(x, y);
     if (isActive) {
@@ -2428,12 +2429,28 @@ class TerminalKitStatusDisplay {
     term(BOX_CHARS.tl);
     if (title && title.length > 0) {
       const titleText = ` ${title} `;
-      const titleLen = Math.min(titleText.length, width - 4);
+      
+      // Добавляем индикатор скроллинга если есть информация
+      let scrollIndicator = '';
+      if (scrollInfo && scrollInfo.total > scrollInfo.visible) {
+        const canScrollUp = scrollInfo.current > 0;
+        const canScrollDown = scrollInfo.current + scrollInfo.visible < scrollInfo.total;
+        if (canScrollUp && canScrollDown) {
+          scrollIndicator = ' ▲▼';
+        } else if (canScrollUp) {
+          scrollIndicator = ' ▲';
+        } else if (canScrollDown) {
+          scrollIndicator = ' ▼';
+        }
+      }
+      
+      const fullTitle = titleText + scrollIndicator;
+      const titleLen = Math.min(fullTitle.length, width - 4);
       if (isActive) {
-        term.bgBlue.white(titleText.substring(0, titleLen));
+        term.bgBlue.white(fullTitle.substring(0, titleLen));
       } else {
         term.styleReset();
-        term.bold(titleText.substring(0, titleLen));
+        term.bold(fullTitle.substring(0, titleLen));
       }
       const remaining = width - titleLen - 2;
       if (remaining > 0) {
@@ -2489,10 +2506,13 @@ class TerminalKitStatusDisplay {
     const startY = 2;
     const height = this.height - 3; // Высота минус заголовок и статистика
 
-    // Рисуем рамку вокруг панели фильтров только при полном рендере
-    if (this.needsFullRender) {
-      this.drawPanelBox(this.leftX, startY, this.leftWidth, height, 'Фильтры', this.activePanel === 0);
-    }
+    // Рисуем рамку вокруг панели фильтров (каждый раз для обновления индикатора скроллинга)
+    const scrollInfo = {
+      current: this.filterScroll,
+      visible: this.filterVisibleRows,
+      total: this.filterRows.length
+    };
+    this.drawPanelBox(this.leftX, startY, this.leftWidth, height, 'Фильтры', this.activePanel === 0, scrollInfo);
 
     // Обновляем скроллинг перед рендерингом
     this.updateFilterScroll();
@@ -2553,12 +2573,15 @@ class TerminalKitStatusDisplay {
     const startY = 2;
     const height = this.height - 3; // Высота минус заголовок и статистика
     
-    // Рисуем рамку вокруг панели таблицы с количеством устройств только при полном рендере
-    if (this.needsFullRender) {
-      const deviceCount = this.devices.length;
-      const tableTitle = `Список устройств (${deviceCount})`;
-      this.drawPanelBox(this.centerX, startY, this.centerWidth, height, tableTitle, this.activePanel === 1);
-    }
+    // Рисуем рамку вокруг панели таблицы с количеством устройств (каждый раз для обновления индикатора)
+    const deviceCount = this.devices.length;
+    const tableTitle = `Список устройств (${deviceCount})`;
+    const scrollInfo = {
+      current: this.tableScroll,
+      visible: this.tableVisibleRows,
+      total: this.devices.length
+    };
+    this.drawPanelBox(this.centerX, startY, this.centerWidth, height, tableTitle, this.activePanel === 1, scrollInfo);
     
     // Заголовки таблицы с увеличенным пространством между полями (+5 символов)
     const nameX = this.centerX + 1;
@@ -2656,11 +2679,23 @@ class TerminalKitStatusDisplay {
     const startY = 2;
     const height = this.height - 3; // Высота минус заголовок и статистика
     
-    // Рисуем рамку вокруг панели параметров только при полном рендере
-    if (this.needsFullRender) {
-      const label = 'Устройство (c - копировать)';
-      this.drawPanelBox(this.rightX, startY, this.rightWidth, height, label, this.activePanel === 2);
+    // Рисуем рамку вокруг панели параметров (каждый раз для обновления индикатора скроллинга)
+    const label = 'Устройство (c - копировать)';
+    
+    // Вычисляем информацию о скроллинге для индикатора
+    let scrollInfo = null;
+    if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length) {
+      const device = this.devices[this.selectedIndex];
+      const deviceInfo = this.getDeviceInfoText(device);
+      const lines = deviceInfo.split('\n');
+      scrollInfo = {
+        current: this.deviceInfoScroll,
+        visible: this.deviceInfoVisibleRows,
+        total: lines.length
+      };
     }
+    
+    this.drawPanelBox(this.rightX, startY, this.rightWidth, height, label, this.activePanel === 2, scrollInfo);
     
     if (this.selectedIndex < 0 || this.selectedIndex >= this.devices.length) {
       term.moveTo(this.rightX + 1, startY + 1);
