@@ -29,6 +29,17 @@ const {
 const filters = require('./filters');
 const opensearch = require('./opensearch');
 
+// Зачем: определение типов устройств-потребителей для добавления признака consumer в события
+// Алгоритм взят из src/monitor.js
+// Примечание: thermostat, hygrostat, co2_stat - программные компоненты, не потребители
+const CONSUMER_TYPES = [
+  'light_220', 'light_LED', 'light_RGB', 'light_led',
+  'socket_220', 'valve_heating', 'valve_water',
+  'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
+  'curtains', 'curtain', 'blind', 'blinds', 'roller',
+  'multiroom',
+];
+
 
 
 
@@ -99,6 +110,9 @@ const DEVICE_STATE_MAX_SIZE = 500; // Максимальный размер devi
 const DEVICE_STATE_TTL_MS = 3600000; // 1 час - TTL для deviceState (зачем: удаление неактивных устройств)
 const ACTUATOR_CACHE_TTL_MS = 86400000; // 24 часа - actuatorStateCache и channelStateCache
 
+// Зачем: флаг отладки для условного логирования (включается через DEBUG=true)
+const DEBUG_MODE = process.env.DEBUG === 'true';
+
 // Логирование
 const log = (message, ...args) => {
   const timestamp = new Date().toISOString();
@@ -108,6 +122,14 @@ const log = (message, ...args) => {
 const logError = (message, ...args) => {
   const timestamp = new Date().toISOString();
   console.error(`[${timestamp}] [event-logger] ERROR: ${message}`, ...args);
+};
+
+// Зачем: условное логирование только в режиме отладки
+const logDebug = (message, ...args) => {
+  if (DEBUG_MODE) {
+    const timestamp = new Date().toISOString();
+    console.log(`[${timestamp}] [event-logger] [DEBUG] ${message}`, ...args);
+  }
 };
 
 // Вспомогательная функция для извлечения полей устройства из state
@@ -205,14 +227,19 @@ const enrichChannelEvent = (id, event) => {
   if (endDeviceId && typeof endDeviceId === 'string') {
     const endDevice = state.get(endDeviceId);
     if (endDevice) {
+      // Зачем: определение, является ли конечное устройство потребителем
+      const endDeviceType = endDevice.type || getDeviceTypeWithFallback(endDeviceId);
+      const endDeviceIsConsumer = isConsumerDevice(endDeviceType);
+      
       event.endDevice = {
         id: endDeviceId,
-        type: endDevice.type || null,
+        type: endDeviceType || null,
         human: getHumanName(endDevice),
         title: endDevice.title || null,
         code: endDevice.code || null,
         name: endDevice.name || null,
-        site: endDevice.site || null
+        site: endDevice.site || null,
+        consumer: endDeviceIsConsumer // Зачем: признак потребителя для мониторинга
       };
       
       // Обогащаем site из конечного устройства
@@ -255,6 +282,16 @@ const getActuatorClass = (id, newState) => {
   return null;
 };
 
+// Зачем: определение, является ли устройство потребителем (алгоритм из src/monitor.js)
+const isConsumerDevice = (deviceType) => {
+  if (!deviceType) return false;
+  // Если тип - строка и содержится в CONSUMER_TYPES
+  if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
+    return true;
+  }
+  return false;
+};
+
 // Проверка, включён ли актуатор
 const isActuatorOn = (actuatorClass, deviceState) => {
   if (!actuatorClass || !deviceState) return false;
@@ -280,9 +317,10 @@ const isActuatorOn = (actuatorClass, deviceState) => {
 };
 
 // Обновление кэша состояния актуаторов
+// Зачем: отслеживание включения/выключения и возврат информации для обогащения событий
 const updateActuatorStateCache = (id, oldState, newState) => {
   const actuatorClass = getActuatorClass(id, newState);
-  if (!actuatorClass) return;
+  if (!actuatorClass) return null;
   
   const wasOn = isActuatorOn(actuatorClass, oldState);
   const isOn = isActuatorOn(actuatorClass, newState);
@@ -291,8 +329,8 @@ const updateActuatorStateCache = (id, oldState, newState) => {
   const now = Date.now();
   
   if (!wasOn && isOn) {
-    // Включение: сохраняем время включения
-    actuatorStateCache.set(id, {
+    // Включение: сохраняем время включения и возвращаем информацию для события
+    const cacheEntry = {
       onTimestamp: now,
       param: actuatorClass === 'light' ? (newState.brightness !== undefined ? 'brightness' : 'value') :
              actuatorClass === 'fan' ? 'fan_speed' :
@@ -300,26 +338,44 @@ const updateActuatorStateCache = (id, oldState, newState) => {
       value: actuatorClass === 'light' ? (newState.brightness || newState.value || 1) :
              actuatorClass === 'fan' ? newState.fan_speed :
              actuatorClass === 'ac' ? newState.mode : newState.setpoint
-    });
+    };
+    actuatorStateCache.set(id, cacheEntry);
+    // Зачем: возвращаем информацию о включении для добавления в событие
+    return {
+      type: 'on',
+      onTimestamp: cacheEntry.onTimestamp,
+      param: cacheEntry.param,
+      value: cacheEntry.value
+    };
   } else if (wasOn && !isOn && cached) {
     // Выключение: вычисляем длительность и очищаем кэш
     const duration = now - cached.onTimestamp;
     actuatorStateCache.delete(id); // Очищаем кэш при выключении
-    // Длительность будет добавлена в событие выключения
+    // Зачем: возвращаем информацию о выключении для добавления в событие
     return {
+      type: 'off',
       onTimestamp: cached.onTimestamp,
       duration: duration,
       param: cached.param,
       value: cached.value
     };
   } else if (wasOn && isOn && cached) {
-    // Устройство остаётся включённым - обновляем значение
+    // Устройство остаётся включённым - обновляем значение и возвращаем информацию о текущей сессии
+    const duration = now - cached.onTimestamp;
     actuatorStateCache.set(id, {
       ...cached,
       value: actuatorClass === 'light' ? (newState.brightness || newState.value || 1) :
              actuatorClass === 'fan' ? newState.fan_speed :
              actuatorClass === 'ac' ? newState.mode : newState.setpoint
     });
+    // Зачем: возвращаем информацию о текущей сессии работы для добавления в событие
+    return {
+      type: 'update',
+      onTimestamp: cached.onTimestamp,
+      duration: duration,
+      param: cached.param,
+      value: cached.value
+    };
   }
   
   return null;
@@ -341,19 +397,28 @@ const updateChannelStateCache = (channelId, oldValue, newValue, endDeviceId) => 
   
   // Включение: old = 0 и newValue > 0
   if (oldValue === 0 && newValue > 0) {
-    channelStateCache.set(endDeviceId, {
+    const cacheEntry = {
       onTimestamp: now,
       channelId: channelId,
       value: newValue
-    });
-    return null; // Включение - возвращаем null
+    };
+    channelStateCache.set(endDeviceId, cacheEntry);
+    // Зачем: возвращаем информацию о включении для добавления в событие
+    return {
+      type: 'on',
+      onTimestamp: cacheEntry.onTimestamp,
+      channelId: cacheEntry.channelId,
+      value: cacheEntry.value
+    };
   }
   
   // Выключение: newValue = 0 и было включено
   if (newValue === 0 && cached) {
     const duration = now - cached.onTimestamp;
     channelStateCache.delete(endDeviceId); // Очищаем кеш при выключении
+    // Зачем: возвращаем информацию о выключении для добавления в событие
     return {
+      type: 'off',
       onTimestamp: cached.onTimestamp,
       duration: duration,
       channelId: cached.channelId,
@@ -363,10 +428,19 @@ const updateChannelStateCache = (channelId, oldValue, newValue, endDeviceId) => 
   
   // Устройство остаётся включённым - обновляем значение
   if (newValue > 0 && cached) {
+    const duration = now - cached.onTimestamp;
     channelStateCache.set(endDeviceId, {
       ...cached,
       value: newValue
     });
+    // Зачем: возвращаем информацию о текущей сессии работы для добавления в событие
+    return {
+      type: 'update',
+      onTimestamp: cached.onTimestamp,
+      duration: duration,
+      channelId: cached.channelId,
+      value: cached.value
+    };
   }
   
   return null;
@@ -1024,26 +1098,18 @@ const handleActionSet = (message) => {
     // ❌ НЕ ПИШЕМ в state! Event-logger только читает, не модифицирует БД
     // state.set(id, newState);
     
-    // Временное логирование для отладки (первые 3 устройства)
-    if (deviceState.size <= 3 && _context) {
-      console.log(`[DEBUG] handleActionSet для ${id}:`, {
-        payloadHasCode: !!payload.code,
-        payloadHasTitle: !!payload.title,
-        payloadHasName: !!payload.name,
-        payloadKeys: Object.keys(payload).filter(k => ['code', 'title', 'name', 'parent', 'site'].includes(k)),
-        oldStateHasCode: !!oldState.code,
-        oldStateHasTitle: !!oldState.title,
-        newStateHasCode: !!newState.code,
-        newStateHasTitle: !!newState.title,
-        stateGetHasCode: !!state.get(id)?.code,
-        stateGetHasTitle: !!state.get(id)?.title
-      });
-    }
+    // Зачем: логирование только в режиме отладки
+    logDebug(`handleActionSet для ${id}`, {
+      payloadHasCode: !!payload.code,
+      payloadHasTitle: !!payload.title,
+      payloadHasName: !!payload.name
+    });
     
     // 1. Кэш устройств не нужен - данные уже в state, обновление происходит автоматически через WebSocket
     
-    // 2. Обновляем кэш состояния актуаторов и получаем информацию о выключении
-    const actuatorOffInfo = updateActuatorStateCache(id, oldState, newState);
+    // 2. Обновляем кэш состояния актуаторов и получаем информацию о включении/выключении/обновлении
+    // Зачем: получаем информацию о времени включения и длительности работы для обогащения событий
+    const actuatorStateInfo = updateActuatorStateCache(id, oldState, newState);
     
     // Получаем контекст из _context или создаём пустой
     const context = _context || {
@@ -1073,7 +1139,8 @@ const handleActionSet = (message) => {
     checkAndGenerateScriptEvent(id, timestamp);
     
     // Обрабатываем событие (используем логику из event-log.js)
-    processEvent(id, oldState, newState, context, cleanPayload, actuatorOffInfo);
+    // Зачем: передаем информацию о состоянии актуатора для обогащения событий
+    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo);
     
   } catch (error) {
     logError('Ошибка обработки ACTION_SET:', error.message, error.stack);
@@ -1081,7 +1148,8 @@ const handleActionSet = (message) => {
 };
 
 // Обработка события (логика из event-log.js)
-const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorOffInfo = null) => {
+// Зачем: обработка событий с обогащением информацией о включении/выключении устройств
+const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null) => {
   if (!id || !newState || typeof newState !== 'object') return;
   
   // Если передан changedPayload, логируем только параметры из payload
@@ -1123,6 +1191,10 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     // Зачем: human вычисляем из оригинальных полей (title/code/name через "/")
     const deviceHuman = getHumanName({ title: deviceTitle, code: deviceCode, name: deviceName }) || getHumanName(newState);
     
+    // Зачем: определение типа устройства для проверки, является ли оно потребителем
+    const deviceType = getDeviceTypeWithFallback(id);
+    const isConsumer = isConsumerDevice(deviceType);
+    
     const event = {
       timestamp: Date.now(),
       id,
@@ -1131,7 +1203,8 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
         human: deviceHuman,
         name: deviceName,
         code: deviceCode,
-        title: deviceTitle
+        title: deviceTitle,
+        consumer: isConsumer // Зачем: признак потребителя для мониторинга
       },
       param,
       old: roundedOldValue,
@@ -1153,24 +1226,51 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     // Зачем: обогащаем событие информацией о канале, конечном устройстве и щитовом устройстве
     const enrichedEvent = enrichChannelEvent(id, event);
     
-    // Зачем: отслеживаем включение/выключение каналов do и dim
+    // Зачем: отслеживаем включение/выключение/обновление каналов do и dim
     if (enrichedEvent.channel && enrichedEvent.endDevice) {
-      const channelOffInfo = updateChannelStateCache(
+      const channelStateInfo = updateChannelStateCache(
         id,                    // channelId
         roundedOldValue,        // oldValue
         roundedNewValue,        // newValue
         enrichedEvent.endDevice.id  // endDeviceId
       );
       
-      // Если устройство выключилось - добавляем информацию в extra
-      if (channelOffInfo && roundedNewValue === 0) {
-        enrichedEvent.extra.end_device_off = {
-          on_timestamp: channelOffInfo.onTimestamp,
-          duration_ms: channelOffInfo.duration,
-          duration_seconds: Math.round(channelOffInfo.duration / 1000),
-          channel_id: channelOffInfo.channelId,
-          value: channelOffInfo.value
-        };
+      // Добавляем информацию о состоянии канала в extra
+      if (channelStateInfo) {
+        if (channelStateInfo.type === 'on') {
+          // Включение: добавляем время включения
+          enrichedEvent.extra.end_device_on = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+        } else if (channelStateInfo.type === 'off') {
+          // Выключение: добавляем информацию о длительности работы
+          enrichedEvent.extra.end_device_off = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            duration_ms: channelStateInfo.duration,
+            duration_seconds: Math.round(channelStateInfo.duration / 1000),
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+          // Зачем: добавляем timestamp_on в формате ISO для индексации в OpenSearch как дата
+          if (channelStateInfo.onTimestamp) {
+            enrichedEvent.timestamp_on = new Date(channelStateInfo.onTimestamp).toISOString();
+          }
+        } else if (channelStateInfo.type === 'update') {
+          // Обновление параметров во время работы: добавляем время включения и текущую длительность
+          enrichedEvent.extra.end_device_update = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            duration_ms: channelStateInfo.duration,
+            duration_seconds: Math.round(channelStateInfo.duration / 1000),
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+          // Зачем: добавляем timestamp_on в формате ISO для индексации в OpenSearch как дата
+          if (channelStateInfo.onTimestamp) {
+            enrichedEvent.timestamp_on = new Date(channelStateInfo.onTimestamp).toISOString();
+          }
+        }
       }
     }
     
@@ -1191,17 +1291,32 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     const oldValue = oldState?.[param];
     const newValue = newState[param];
     
+    // Зачем: определяем тип устройства до использования в фильтрах
+    const deviceType = getDeviceTypeWithFallback(id);
+    
+    // Зачем: для фильтрации потребителей передаем тип устройства из newState
+    // Проблема: filters.js проверяет state.get(id), но устройство может быть еще не загружено
+    // Решение: проверяем тип из newState напрямую
+    const deviceTypeForFilter = newState.type || deviceType;
+    const isConsumerForFilter = isConsumerDevice(deviceTypeForFilter);
+    
+    // Создаем расширенную функцию проверки актуатора, которая также учитывает потребителей
+    const isActuatorOrConsumer = (id) => {
+      // Проверяем, является ли актуатором
+      if (isActuatorDevice(id)) return true;
+      // Проверяем, является ли потребителем
+      return isConsumerForFilter;
+    };
+    
     // Проверка через типизированную систему фильтров
-    const shouldLog = filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorDevice);
+    const shouldLog = filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorOrConsumer);
     if (!shouldLog) {
       // Зачем: временное логирование для отладки фильтров
       if (id === '8828b19b-55b6-4f88-ac6b-20c41b02f1ad') {
-        log(`🚫 Событие отфильтровано: ${id.slice(0,8)} ${param}  ${oldValue}→${newValue}`);
+        log(`🚫 Событие отфильтровано: ${id.slice(0,8)} ${param}  ${oldValue}→${newValue} type=${deviceTypeForFilter} consumer=${isConsumerForFilter}`);
       }
       continue; // Фильтр отклонил событие
     }
-    
-    const deviceType = getDeviceTypeWithFallback(id);
     // Зачем: обрабатываем как числовые типы устройств, так и строковые (site, project, daemon)
     let deviceTypeStr = null;
     if (typeof deviceType === 'number') {
@@ -1234,22 +1349,43 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     // Зачем: human вычисляем из оригинальных полей (title/code/name через "/")
     const deviceHuman = getHumanName({ title: deviceTitle, code: deviceCode, name: deviceName }) || getHumanName(newState);
     
-    // Обогащаем событие информацией о выключении актуатора
+    // Обогащаем событие информацией о включении/выключении/обновлении актуатора
+    // Зачем: добавление on_timestamp и duration для мониторинга времени работы устройств
     const extra = {};
-    if (actuatorOffInfo && (param === 'value' || param === 'brightness' || param === 'fan_speed' || param === 'mode' || param === 'setpoint')) {
-      // Если это событие выключения актуатора, добавляем информацию о длительности работы
-      if (roundedNewValue === 0 || roundedNewValue === 'stop' || roundedNewValue === null) {
+    if (actuatorStateInfo && (param === 'value' || param === 'brightness' || param === 'fan_speed' || param === 'mode' || param === 'setpoint')) {
+      if (actuatorStateInfo.type === 'on') {
+        // Включение: добавляем время включения
+        // Зачем: убрали value - конфликт типов в OpenSearch (long vs boolean)
+        extra.actuator_on = {
+          on_timestamp: actuatorStateInfo.onTimestamp,
+          param: actuatorStateInfo.param
+        };
+      } else if (actuatorStateInfo.type === 'off') {
+        // Выключение: добавляем информацию о длительности работы
+        // Зачем: убрали value - конфликт типов в OpenSearch
         extra.actuator_off = {
-          on_timestamp: actuatorOffInfo.onTimestamp,
-          duration_ms: actuatorOffInfo.duration,
-          duration_seconds: Math.round(actuatorOffInfo.duration / 1000),
-          param: actuatorOffInfo.param,
-          value: actuatorOffInfo.value
+          on_timestamp: actuatorStateInfo.onTimestamp,
+          duration_ms: actuatorStateInfo.duration,
+          duration_seconds: Math.round(actuatorStateInfo.duration / 1000),
+          param: actuatorStateInfo.param
+        };
+      } else if (actuatorStateInfo.type === 'update') {
+        // Обновление параметров во время работы: добавляем время включения и текущую длительность
+        // Зачем: убрали value - конфликт типов в OpenSearch
+        extra.actuator_update = {
+          on_timestamp: actuatorStateInfo.onTimestamp,
+          duration_ms: actuatorStateInfo.duration,
+          duration_seconds: Math.round(actuatorStateInfo.duration / 1000),
+          param: actuatorStateInfo.param
         };
       }
     }
     
-    const event = {
+    // Зачем: определение, является ли устройство потребителем (алгоритм из src/monitor.js)
+    const isConsumer = isConsumerDevice(deviceType);
+    
+    // Зачем: добавляем on_timestamp и duration на верхнем уровне события для удобства мониторинга
+    const eventBase = {
       timestamp: Date.now(),
       id,
       device: {
@@ -1257,7 +1393,8 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
         human: deviceHuman,
         name: deviceName,
         code: deviceCode,
-        title: deviceTitle
+        title: deviceTitle,
+        consumer: isConsumer // Зачем: признак потребителя для мониторинга
       },
       param,
       old: roundedOldValue,
@@ -1283,27 +1420,74 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
       extra
     };
     
+    // Добавляем on_timestamp и duration на верхнем уровне, если есть информация о состоянии актуатора
+    // Зачем: упрощение мониторинга времени работы устройств без необходимости обращаться к extra
+    if (actuatorStateInfo && (param === 'value' || param === 'brightness' || param === 'fan_speed' || param === 'mode' || param === 'setpoint')) {
+      // Зачем: добавляем on_timestamp для всех типов событий (включение, выключение, обновление)
+      if (actuatorStateInfo.onTimestamp) {
+        eventBase.on_timestamp = actuatorStateInfo.onTimestamp;
+      }
+      // Зачем: duration добавляем только при выключении и обновлении (когда устройство уже работало)
+      if (actuatorStateInfo.duration !== undefined) {
+        eventBase.duration_ms = actuatorStateInfo.duration;
+        eventBase.duration_seconds = Math.round(actuatorStateInfo.duration / 1000);
+        // Зачем: добавляем timestamp_on в формате ISO для индексации в OpenSearch как дата (только при выключении/обновлении)
+        if (actuatorStateInfo.onTimestamp) {
+          eventBase.timestamp_on = new Date(actuatorStateInfo.onTimestamp).toISOString();
+        }
+      }
+    }
+    
+    const event = eventBase;
+    
     // Зачем: обогащаем событие информацией о канале, конечном устройстве и щитовом устройстве
     const enrichedEvent = enrichChannelEvent(id, event);
     
-    // Зачем: отслеживаем включение/выключение каналов do и dim
+    // Зачем: отслеживаем включение/выключение/обновление каналов do и dim
     if (enrichedEvent.channel && enrichedEvent.endDevice) {
-      const channelOffInfo = updateChannelStateCache(
+      const channelStateInfo = updateChannelStateCache(
         id,                    // channelId
         roundedOldValue,        // oldValue
         roundedNewValue,        // newValue
         enrichedEvent.endDevice.id  // endDeviceId
       );
       
-      // Если устройство выключилось - добавляем информацию в extra
-      if (channelOffInfo && roundedNewValue === 0) {
-        enrichedEvent.extra.end_device_off = {
-          on_timestamp: channelOffInfo.onTimestamp,
-          duration_ms: channelOffInfo.duration,
-          duration_seconds: Math.round(channelOffInfo.duration / 1000),
-          channel_id: channelOffInfo.channelId,
-          value: channelOffInfo.value
-        };
+      // Добавляем информацию о состоянии канала в extra
+      if (channelStateInfo) {
+        if (channelStateInfo.type === 'on') {
+          // Включение: добавляем время включения
+          enrichedEvent.extra.end_device_on = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+        } else if (channelStateInfo.type === 'off') {
+          // Выключение: добавляем информацию о длительности работы
+          enrichedEvent.extra.end_device_off = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            duration_ms: channelStateInfo.duration,
+            duration_seconds: Math.round(channelStateInfo.duration / 1000),
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+          // Зачем: добавляем timestamp_on в формате ISO для индексации в OpenSearch как дата
+          if (channelStateInfo.onTimestamp) {
+            enrichedEvent.timestamp_on = new Date(channelStateInfo.onTimestamp).toISOString();
+          }
+        } else if (channelStateInfo.type === 'update') {
+          // Обновление параметров во время работы: добавляем время включения и текущую длительность
+          enrichedEvent.extra.end_device_update = {
+            on_timestamp: channelStateInfo.onTimestamp,
+            duration_ms: channelStateInfo.duration,
+            duration_seconds: Math.round(channelStateInfo.duration / 1000),
+            channel_id: channelStateInfo.channelId,
+            value: channelStateInfo.value
+          };
+          // Зачем: добавляем timestamp_on в формате ISO для индексации в OpenSearch как дата
+          if (channelStateInfo.onTimestamp) {
+            enrichedEvent.timestamp_on = new Date(channelStateInfo.onTimestamp).toISOString();
+          }
+        }
       }
     }
     
@@ -1372,7 +1556,7 @@ const addToBuffer = (event) => {
   // Если буфер переполнен, удаляем старые события
   if (eventBuffer.length > BUFFER_MAX_SIZE) {
     const removed = eventBuffer.shift();
-    console.log(`Буфер переполнен, удалено старое событие: ${removed.id}/${removed.param}`);
+    logError(`Буфер переполнен, удалено старое событие: ${removed?.id || 'unknown'}/${removed?.param || 'unknown'}`);
   }
 };
 
@@ -1386,7 +1570,7 @@ const flushBuffer = async () => {
     
     try {
       await opensearch.sendBatch(eventsToSend);
-      console.log(`Отправлено ${eventsToSend.length} событий из буфера`);
+      log(`Отправлено ${eventsToSend.length} событий из буфера`);
     } catch (err) {
       logError('Ошибка отправки событий из буфера:', err.message);
       // Возвращаем события в буфер
@@ -1401,32 +1585,31 @@ const handleList = (message) => {
     const { state: stateList } = message;
     
     if (!Array.isArray(stateList)) {
-      console.log('LIST не содержит массив state');
+      logError('LIST не содержит массив state');
       return;
     }
     
-    console.log(`Получено ${stateList.length} ID устройств из LIST`);
+    log(`Получено ${stateList.length} ID устройств из LIST`);
     
     // LIST возвращает [[id, timestamp], ...], а не полные данные
     // Нужно запросить полные данные через GET
     const deviceIds = stateList.map(([id]) => id).filter(Boolean);
     
     if (deviceIds.length > 0) {
-      console.log(`Запрашиваем полные данные для ${deviceIds.length} устройств через GET...`);
+      log(`Запрашиваем полные данные для ${deviceIds.length} устройств через GET...`);
       
       // Запрашиваем полные данные через GET
       // GET принимает массив ID в поле state
       // GET вернёт серию ACTION_SET сообщений (по одному на каждое устройство)
       if (ws && ws.readyState === WebSocket.OPEN) {
         pendingGetRequests = deviceIds.length;
-        console.log('[DEBUG] Отправлен GET запрос для', deviceIds.length, 'устройств');
-        console.log('[DEBUG] Первые 5 ID:', deviceIds.slice(0, 5).join(', '));
+        logDebug('Отправлен GET запрос', { count: deviceIds.length, firstIds: deviceIds.slice(0, 5) });
         ws.send(JSON.stringify({ type: GET, state: deviceIds }));
         
         // Таймаут для получения всех ответов
         setTimeout(() => {
           if (pendingGetRequests > 0) {
-            console.log(`Предупреждение: получено не все ответы на GET (ожидалось ${deviceIds.length}, получено ${deviceIds.length - pendingGetRequests})`);
+            logError(`Предупреждение: получено не все ответы на GET (ожидалось ${deviceIds.length}, получено ${deviceIds.length - pendingGetRequests})`);
             stateRequested = false;
             isInitialStateReceived = true;
             pendingGetRequests = 0;
@@ -1434,7 +1617,7 @@ const handleList = (message) => {
         }, STATE_REQUEST_TIMEOUT);
       }
     } else {
-      console.log('Нет устройств для запроса');
+      log('Нет устройств для запроса');
       stateRequested = false;
       isInitialStateReceived = true;
     }
@@ -1451,7 +1634,7 @@ const requestFullState = () => {
   if (stateRequested) return;
   stateRequested = true;
   
-  console.log('Запрашиваем полное состояние...');
+  log('Запрашиваем полное состояние...');
   
   // Отправляем LIST для получения полного состояния
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1482,15 +1665,11 @@ const initStateFromWebSocket = (stateData) => {
       if (payload && typeof payload === 'object') {
         if (payload.type === 'site' || payload.type === 'SITE') {
           siteCount++;
-          if (siteCount <= 5) {
-            console.log(`[DEBUG] Найден site: ${id}, title: ${payload.title}, code: ${payload.code}`);
-          }
+          logDebug('Найден site', { id, title: payload.title, code: payload.code });
         }
         if (payload.type === 'project' || payload.type === 'PROJECT') {
           projectCount++;
-          if (projectCount <= 3) {
-            console.log(`[DEBUG] Найден project: ${id}, title: ${payload.title}, code: ${payload.code}`);
-          }
+          logDebug('Найден project', { id, title: payload.title, code: payload.code });
         }
       }
     }
@@ -1518,7 +1697,7 @@ const connect = () => {
     return; // Уже подключено
   }
   
-  console.log(`Подключение к ${DAEMON_WS_URL}...`);
+  log(`Подключение к ${DAEMON_WS_URL}...`);
   
   ws = new WebSocket(DAEMON_WS_URL);
   
@@ -1532,7 +1711,7 @@ const connect = () => {
       // Переподключение
       if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
         reconnectAttempts++;
-        console.log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
+        log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
         setTimeout(connect, RECONNECT_DELAY);
       } else {
         logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`);
@@ -1542,7 +1721,7 @@ const connect = () => {
   }, CONNECTION_TIMEOUT);
   
   ws.on('open', () => {
-    console.log('WebSocket подключен', 'URL:', DAEMON_WS_URL, 'readyState:', ws.readyState);
+    log(`WebSocket подключен: ${DAEMON_WS_URL}`);
     clearTimeout(connectionTimeoutId);
     isConnected = true;
     reconnectAttempts = 0;
@@ -1565,18 +1744,17 @@ const connect = () => {
       
       const message = JSON.parse(dataString);
       
-      // Логируем все сообщения для диагностики
-      console.log('[DEBUG] Получено сообщение типа:', message.type, 'ID:', message.id || 'N/A', '_context:', message._context ? 'present' : 'absent');
+      // Зачем: логирование только в режиме отладки
+      logDebug('Получено сообщение', { type: message.type, id: message.id || 'N/A', hasContext: !!message._context });
       
-      // Логируем все сообщения после GET запроса для отладки
-      if (!isInitialStateReceived && pendingGetRequests > 0) {
+      // Зачем: логирование только в режиме отладки при начальной загрузке
+      if (DEBUG_MODE && !isInitialStateReceived && pendingGetRequests > 0) {
         if (message.type === 'action_set' || message.type === ACTION_SET) {
-          console.log('[DEBUG] ACTION_SET детали:', JSON.stringify({
+          logDebug('ACTION_SET детали', {
             id: message.id,
             hasPayload: !!message.payload,
-            hasContext: !!message._context,
-            contextType: message._context?.type || 'none'
-          }));
+            hasContext: !!message._context
+          });
         }
       }
       
@@ -1590,7 +1768,7 @@ const connect = () => {
           // Если это начальное состояние (без _context), обновляем deviceState
           // Иначе обрабатываем как событие изменения
           if (!isInitialStateReceived && !message._context && pendingGetRequests > 0) {
-            console.log('[DEBUG] Получен ACTION_SET для начального состояния, ID:', message.id, 'pendingGetRequests:', pendingGetRequests);
+            logDebug('Получен ACTION_SET для начального состояния', { id: message.id, pendingGetRequests });
             // Это начальное состояние из GET (ответ на запрос полного состояния)
             // Зачем: при GET payload содержит полное состояние устройства, используем его как есть
             const { id, payload } = message;
@@ -1610,26 +1788,17 @@ const connect = () => {
               // ❌ НЕ ПИШЕМ в state! Event-logger только читает
               // state.set(id, payload);
               
-              // Временное логирование для отладки (первые 5 устройств)
-              if (deviceState.size <= 5) {
-                console.log(`[DEBUG] Начальное состояние для ${id}:`, {
-                  hasCode: !!payload.code,
-                  hasTitle: !!payload.title,
-                  hasName: !!payload.name,
-                  payloadKeys: Object.keys(payload).filter(k => ['code', 'title', 'name', 'parent', 'site', 'type'].includes(k)),
-                  allPayloadKeys: Object.keys(payload).slice(0, 20), // Первые 20 ключей для понимания структуры
-                  payloadSample: JSON.stringify(payload).substring(0, 200) // Первые 200 символов payload
-                });
-              }
+              // Зачем: логирование только в режиме отладки
+              logDebug('Начальное состояние', { id, hasCode: !!payload.code, hasTitle: !!payload.title });
               
               // Кэш устройств не нужен - данные будут доступны через state после initStateFromWebSocket
               
               pendingGetRequests--;
-            console.log('[DEBUG] pendingGetRequests уменьшен до:', pendingGetRequests);
+            logDebug('pendingGetRequests', { current: pendingGetRequests });
               
               // Если все ответы получены, считаем начальное состояние загруженным
               if (pendingGetRequests <= 0) {
-                console.log(`Восстановлено ${deviceState.size} состояний устройств`);
+                log(`Восстановлено ${deviceState.size} состояний устройств`);
                 // Данные загружены в state через initStateFromWebSocket
                 
                 // Зачем: инициализируем глобальный state из полученных через WebSocket данных
@@ -1662,7 +1831,7 @@ const connect = () => {
   });
   
   ws.on("close", (code, reason) => {
-    console.log("WebSocket соединение закрыто, код:", code, "причина:", reason ? reason.toString() : "нет");
+    log(`WebSocket соединение закрыто, код: ${code}, причина: ${reason ? reason.toString() : 'нет'}`);
     clearTimeout(connectionTimeoutId);
     isConnected = false;
     stateRequested = false;
@@ -1672,7 +1841,7 @@ const connect = () => {
     // Пытаемся переподключиться
     if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempts++;
-      console.log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
+      log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
       setTimeout(connect, RECONNECT_DELAY);
     } else {
       logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`);
@@ -1683,7 +1852,7 @@ const connect = () => {
 
 // Graceful shutdown
 const shutdown = () => {
-  console.log('Получен сигнал завершения, завершаем работу...');
+  log('Получен сигнал завершения, завершаем работу...');
   
   // Останавливаем интервал
   if (bufferFlushInterval) {
@@ -1707,8 +1876,8 @@ process.on('SIGTERM', shutdown);
 
 // Запуск
 
-console.log(`Подключение к демону: ${DAEMON_WS_URL}`);
-console.log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
+log(`Подключение к демону: ${DAEMON_WS_URL}`);
+log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
 
 // Периодически пытаемся отправить события из буфера
 bufferFlushInterval = setInterval(flushBuffer, 5000); // Каждые 5 секунд

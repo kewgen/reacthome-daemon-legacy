@@ -246,7 +246,8 @@ const isActuatorDevice = (id) => {
   // Для корневых устройств - проверка по типу
   // Зачем: поддержка как числовых, так и строковых типов устройств
   
-  // Строковые типы актуаторов (light_220, socket_220, и т.д.)
+  // Строковые типы актуаторов и потребителей (light_220, socket_220, и т.д.)
+  // Зачем: потребители также должны логироваться как актуаторы при включении/выключении
   if (typeof deviceType === 'string') {
     const actuatorStringTypes = [
       'light_220',
@@ -259,7 +260,21 @@ const isActuatorDevice = (id) => {
       'boiler',
       'pump'
     ];
-    return actuatorStringTypes.includes(deviceType.toLowerCase());
+    if (actuatorStringTypes.includes(deviceType.toLowerCase())) {
+      return true;
+    }
+    
+    // Зачем: проверяем также типы потребителей (алгоритм из src/monitor.js)
+    // Потребители также должны логироваться при изменении value
+    const CONSUMER_TYPES = [
+      'light_220', 'light_LED', 'light_RGB', 'light_led',
+      'socket_220', 'valve_heating', 'valve_water',
+      'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
+      'thermostat', 'hygrostat', 'co2_stat',
+      'curtains', 'curtain', 'blind', 'blinds', 'roller',
+      'multiroom',
+    ];
+    return CONSUMER_TYPES.includes(deviceType);
   }
   
   // Числовые типы актуаторов
@@ -835,30 +850,7 @@ const add = (id, oldState, newState, context, changedPayload = null) => {
         session: context.session || null,
         remote_ip: context.remote_ip || null
       },
-      site: (() => {
-        // Включаем debug для случаев, когда site=null
-        const current = state.get(id);
-        const siteType = current?.site ? (Array.isArray(current.site) ? 'array' : typeof current.site) : 'none';
-        const enableDebug = !current?.site && !current?.project && !current?.parent;
-        const siteName = getSiteName(id, 10, new Set(), enableDebug);
-        
-        // Временное логирование для диагностики (можно убрать после проверки)
-        if (!siteName) {
-          const siteId = current?.site ? (Array.isArray(current.site) ? current.site[0] : current.site) : null;
-          console.log(`[event-log] site=null для id=${id}, type=${current?.type}, site=${siteType}, siteId=${siteId || 'N/A'}, hasProject=${!!current?.project}, hasParent=${!!current?.parent}`);
-          
-          // Если есть siteId, проверяем, существует ли объект сайта
-          if (siteId) {
-            const siteObj = state.get(siteId);
-            if (siteObj) {
-              console.log(`[event-log] Объект сайта ${siteId} найден: type=${siteObj.type}, hasTitle=${!!siteObj.title}, hasCode=${!!siteObj.code}, title=${siteObj.title || 'N/A'}, code=${siteObj.code || 'N/A'}`);
-            } else {
-              console.log(`[event-log] Объект сайта ${siteId} НЕ найден в state`);
-            }
-          }
-        }
-        return siteName;
-      })(),
+      site: getSiteName(id),
       project: getProjectName(id),
       extra: {}
     };

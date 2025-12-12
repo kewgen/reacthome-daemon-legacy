@@ -150,7 +150,35 @@ const RULE_ACTUATOR_CHANGES = {
         }
         return true; // DO и DIM каналы - актуаторы
       } else {
-        return isActuatorDeviceFn(id); // Проверяем, является ли устройство актуатором
+        // Зачем: проверяем, является ли устройство актуатором или потребителем
+        // Потребители (light_220, socket_220 и т.д.) также должны логироваться
+        const isActuator = isActuatorDeviceFn(id);
+        if (isActuator) {
+          return true;
+        }
+        
+        // Если не актуатор, проверяем, является ли устройство потребителем
+        // Зачем: потребители также должны логироваться при включении/выключении
+        // Используем state для получения типа устройства
+        const state = require('../controllers/state');
+        const device = state.get(id);
+        if (device && device.type) {
+          const deviceType = device.type;
+          // Проверяем список типов потребителей (из event-logger.js)
+          // Примечание: thermostat, hygrostat, co2_stat - программные компоненты, не потребители
+          const CONSUMER_TYPES = [
+            'light_220', 'light_LED', 'light_RGB', 'light_led',
+            'socket_220', 'valve_heating', 'valve_water',
+            'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
+            'curtains', 'curtain', 'blind', 'blinds', 'roller',
+            'multiroom',
+          ];
+          if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
+            return true; // Потребитель - логируем
+          }
+        }
+        
+        return false; // Не актуатор и не потребитель - не логируем
       }
     }
     

@@ -242,16 +242,45 @@ const ensureIndexMapping = async (indexName) => {
             },
             extra: {
               properties: {
+                actuator_on: {
+                  properties: {
+                    on_timestamp: { type: 'long' },
+                    param: { type: 'keyword' }
+                  }
+                },
                 actuator_off: {
                   properties: {
                     on_timestamp: { type: 'long' },
                     duration_ms: { type: 'long' },
                     duration_seconds: { type: 'integer' },
-                    param: { type: 'keyword' },
+                    param: { type: 'keyword' }
+                  }
+                },
+                actuator_update: {
+                  properties: {
+                    on_timestamp: { type: 'long' },
+                    duration_ms: { type: 'long' },
+                    duration_seconds: { type: 'integer' },
+                    param: { type: 'keyword' }
+                  }
+                },
+                end_device_on: {
+                  properties: {
+                    on_timestamp: { type: 'long' },
+                    channel_id: { type: 'keyword' },
                     value: { type: 'keyword' }
                   }
                 },
                 end_device_off: {
+                  properties: {
+                    on_timestamp: { type: 'long' },
+                    duration_ms: { type: 'long' },
+                    duration_seconds: { type: 'integer' },
+                    channel_id: { type: 'keyword' },
+                    value: { type: 'keyword' }
+                  }
+                },
+                end_device_update: {
                   properties: {
                     on_timestamp: { type: 'long' },
                     duration_ms: { type: 'long' },
@@ -305,9 +334,7 @@ const ensureIndexMapping = async (indexName) => {
           body: JSON.stringify(traceIdField),
           agent: getHttpsAgent()
         });
-        if (traceIdResponse.ok) {
-          console.log(`[opensearch] Добавлено поле trace_id в индекс ${indexName}`);
-        }
+        // Зачем: не логируем - слишком частое событие, засоряет логи
       } catch (err) {
         // Игнорируем ошибки - поле может уже существовать
       }
@@ -339,9 +366,7 @@ const ensureIndexMapping = async (indexName) => {
           body: JSON.stringify(parentDeviceField),
           agent: getHttpsAgent()
         });
-        if (parentDeviceResponse.ok) {
-          console.log(`[opensearch] Добавлено поле parentDevice в индекс ${indexName}`);
-        }
+        // Зачем: не логируем - слишком частое событие, засоряет логи
       } catch (err) {
         // Игнорируем ошибки - поле может уже существовать
       }
