@@ -2856,8 +2856,8 @@ class TerminalKitStatusDisplay {
       // Название
       term.moveTo(nameX, y);
       const icon = getDeviceIcon(device.type, device.category) || '';
-      // Резервируем 3 символа для иконки (эмодзи занимают 2 визуальных символа + пробел)
-      const iconSpace = 3;
+      // Резервируем 4 визуальных символа для иконки (эмодзи + пробелы для выравнивания)
+      const iconSpace = 4; // Фиксированное пространство для иконки (визуальные символы)
       const name = (device.name || device.id || '—').substring(0, nameWidth - iconSpace);
       const namePadded = name.padEnd(nameWidth - iconSpace);
       
@@ -2876,14 +2876,14 @@ class TerminalKitStatusDisplay {
       const isInverseTrueValueFalse = deviceInverse === true && deviceValue === false;
       const shouldBeGreen = isValueGreaterThanZero || isValueTrue || isInverseTrueValueFalse;
       
-      // Выводим иконку в фиксированном пространстве (3 визуальных символа: иконка + 1 пробел)
+      // Выводим иконку в фиксированном пространстве (4 визуальных символа: иконка + пробелы)
       // Зачем: Обеспечиваем одинаковое расстояние от иконки до названия для всех устройств
-      // Эмодзи занимают 2 визуальных символа в терминале, добавляем 1 пробел = 3 визуальных символа
+      // Большинство эмодзи занимают 2 визуальных символа, добавляем 2 пробела = 4 визуальных символа
       if (icon) {
-        term(icon); // Выводим иконку (2 визуальных символа)
-        term(' ');  // Добавляем один пробел после иконки (итого 3 визуальных символа)
+        term(icon); // Выводим иконку (обычно 2 визуальных символа)
+        term('  '); // Добавляем 2 пробела для фиксированного расстояния (итого 4 визуальных символа)
       } else {
-        term('   '); // Если иконки нет, выводим 3 пробела для сохранения выравнивания
+        term(' '.repeat(iconSpace)); // Если иконки нет, выводим пробелы для сохранения выравнивания
       }
       if (shouldBeGreen) {
         term.green(namePadded); // Зелёный цвет для включенных устройств (value > 0, value: true или inverse: true && value: false)
