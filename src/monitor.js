@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.29 (ручное управление версией)
+ * Версия: 1.0.30 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.29';
+const VERSION = '1.0.30';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -4163,6 +4163,73 @@ class TerminalKitStatusDisplay {
         info.push(`Связь с модулем:`);
         info.push(`  Bind: ${sensorBindValue}`);
         info.push(`  ⚠️  Формат bind не соответствует привязке к модулю (ожидается: {moduleId}/di/{номер})`);
+      }
+    }
+    
+    // Резолвинг параметров для устройств NOVA (приточная вентиляция)
+    // Зачем: NOVA устройства имеют специфичные параметры (режим, состояние, скорость вентилятора, уставка), которые нужно резолвить в читаемый вид
+    const isNova = device.type === 'NOVA' || device.type === 'nova';
+    if (isNova && state) {
+      info.push('');
+      info.push(`🌬️  Параметры приточной вентиляции:`);
+      
+      // Режим работы
+      const mode = state.mode;
+      if (mode !== undefined && mode !== null) {
+        const modeNames = {
+          'cool': 'Охлаждение',
+          'heat': 'Обогрев',
+          'ventilation': 'Вентиляция',
+          'stop': 'Остановлен',
+          'auto': 'Автоматический'
+        };
+        const modeName = modeNames[mode] || mode;
+        info.push(`  Режим: ${modeName} (${mode})`);
+      }
+      
+      // Состояние устройства
+      const deviceState = state.state;
+      if (deviceState !== undefined && deviceState !== null) {
+        const stateNames = {
+          'stop': 'Остановлен',
+          'running': 'Работает',
+          'cooling': 'Охлаждение',
+          'heating': 'Обогрев',
+          'ventilating': 'Вентиляция'
+        };
+        const stateName = stateNames[deviceState] || deviceState;
+        info.push(`  Состояние: ${stateName} (${deviceState})`);
+      }
+      
+      // Скорость вентилятора (может быть в разных полях)
+      const fanSpeed = state.fan_speed !== undefined ? state.fan_speed : state.fan_speed_;
+      if (fanSpeed !== undefined && fanSpeed !== null) {
+        info.push(`  Скорость вентилятора: ${fanSpeed}`);
+      }
+      
+      // Уставка температуры
+      const setpoint = state.setpoint;
+      if (setpoint !== undefined && setpoint !== null) {
+        info.push(`  Уставка: ${setpoint}°C`);
+      }
+      
+      // Синхронизация
+      const synced = state.synced;
+      if (synced !== undefined && synced !== null) {
+        info.push(`  Синхронизация: ${synced ? '✅ Синхронизировано' : '⚠️  Не синхронизировано'}`);
+      }
+      
+      // Значение (общее состояние)
+      const value = state.value;
+      if (value !== undefined && value !== null) {
+        const valueNames = {
+          0: 'Выключен',
+          1: 'Включен',
+          false: 'Выключен',
+          true: 'Включен'
+        };
+        const valueName = valueNames[value] !== undefined ? valueNames[value] : value;
+        info.push(`  Значение: ${valueName} (${value})`);
       }
     }
     
