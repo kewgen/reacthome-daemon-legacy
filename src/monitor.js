@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.23 (ручное управление версией)
+ * Версия: 1.0.24 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.23';
+const VERSION = '1.0.24';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -688,6 +688,13 @@ const askYesNo = async (question) => {
 // Зачем: Проверка обновления и предложение загрузки
 const checkForRemoteUpdateAndMaybeApply = async () => {
   if (!shouldCheckUpdates()) return { checked: false };
+
+  // Зачем: Node < 18 не имеет глобального fetch — не ломаем запуск
+  if (typeof fetch !== 'function') {
+    console.log('[INFO] Проверка обновлений недоступна: требуется Node.js >= 18 (нет fetch)');
+    if (isCheckUpdateOnlyMode()) process.exit(0);
+    return { checked: true, skipped: true, reason: 'no-fetch' };
+  }
 
   let remoteSource = null;
   let remoteVersion = null;
