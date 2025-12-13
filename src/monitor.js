@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.35 (ручное управление версией)
+ * Версия: 1.0.36 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.35';
+const VERSION = '1.0.36';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -4105,8 +4105,26 @@ class TerminalKitStatusDisplay {
         if (binding.channelState) {
           const channelValue = binding.channelState.value !== undefined ? binding.channelState.value : '—';
           info.push(`  Состояние канала: ${channelValue}`);
+          
+          // Дополнительная информация для DIM каналов (LED подсветка)
+          // Зачем: Для LED устройств важно показывать яркость в процентах и состояние включено/выключено
+          if (binding.channelType === 'dim' && typeof channelValue === 'number') {
+            const brightnessPercent = Math.round((channelValue / 255) * 100);
+            const isOn = channelValue > 0;
+            info.push(`  Яркость: ${brightnessPercent}% (${isOn ? 'ВКЛ' : 'ВЫКЛ'})`);
+          }
         } else {
           info.push(`  Состояние канала: — (данные не получены)`);
+        }
+        
+        // Дополнительная информация для LED устройств
+        // Зачем: Показываем последнее значение яркости из параметра last.value
+        const isLED = device.type === 'LIGHT_LED' || device.type === 'light_LED' || device.type === 'light_led';
+        if (isLED && state && state.last && typeof state.last.value === 'number') {
+          const lastBrightness = state.last.value;
+          const lastBrightnessPercent = Math.round((lastBrightness / 255) * 100);
+          const lastIsOn = lastBrightness > 0;
+          info.push(`  Последняя яркость: ${lastBrightness} (${lastBrightnessPercent}%, ${lastIsOn ? 'ВКЛ' : 'ВЫКЛ'})`);
         }
       } else {
         info.push(`  Bind: ${bindValue}`);
