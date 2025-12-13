@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.31 (ручное управление версией)
+ * Версия: 1.0.33 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.32';
+const VERSION = '1.0.33';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -4322,6 +4322,117 @@ class TerminalKitStatusDisplay {
         info.push(`  IP адрес: ${state.ip}`);
       } else if (device.ip) {
         info.push(`  IP адрес: ${device.ip}`);
+      }
+    }
+    
+    // Резолвинг параметров для устройств INTESIS_BOX (кондиционеры через Intesis Box)
+    // Зачем: INTESIS_BOX устройства имеют специфичные параметры (режим, направление, скорость вентилятора, уставка), которые нужно резолвить в читаемый вид
+    const isIntesisBox = device.type === 'INTESIS_BOX' || device.type === 'intesis_box';
+    if (isIntesisBox && state) {
+      info.push('');
+      info.push(`❄️  Параметры кондиционера (Intesis Box):`);
+      
+      // Режим работы (обычно: 0=off, 1=heat, 2=cool, 3=auto, 4=fan, 5=dry)
+      const mode = state.mode;
+      if (mode !== undefined && mode !== null) {
+        const modeNames = {
+          0: 'Выключен',
+          1: 'Обогрев',
+          2: 'Охлаждение',
+          3: 'Автоматический',
+          4: 'Вентиляция',
+          5: 'Осушение',
+          'off': 'Выключен',
+          'heat': 'Обогрев',
+          'cool': 'Охлаждение',
+          'auto': 'Автоматический',
+          'fan': 'Вентиляция',
+          'dry': 'Осушение',
+          'ventilation': 'Вентиляция'
+        };
+        const modeName = modeNames[mode] !== undefined ? modeNames[mode] : `Режим ${mode}`;
+        info.push(`  Режим: ${modeName} (${mode})`);
+      }
+      
+      // Направление воздушного потока (обычно: 0=auto, 1=horizontal, 2=vertical, 3=swing)
+      const direction = state.direction;
+      if (direction !== undefined && direction !== null) {
+        const directionNames = {
+          0: 'Автоматическое',
+          1: 'Горизонтальное',
+          2: 'Вертикальное',
+          3: 'Качание',
+          4: 'Фиксированное',
+          'auto': 'Автоматическое',
+          'horizontal': 'Горизонтальное',
+          'vertical': 'Вертикальное',
+          'swing': 'Качание',
+          'fixed': 'Фиксированное'
+        };
+        const directionName = directionNames[direction] !== undefined ? directionNames[direction] : `Направление ${direction}`;
+        info.push(`  Направление: ${directionName} (${direction})`);
+      }
+      
+      // Скорость вентилятора
+      const fanSpeed = state.fan_speed;
+      if (fanSpeed !== undefined && fanSpeed !== null) {
+        const fanSpeedNames = {
+          0: 'Автоматическая',
+          1: 'Низкая',
+          2: 'Средняя',
+          3: 'Высокая',
+          4: 'Максимальная',
+          'auto': 'Автоматическая',
+          'low': 'Низкая',
+          'medium': 'Средняя',
+          'high': 'Высокая',
+          'max': 'Максимальная'
+        };
+        const fanSpeedName = fanSpeedNames[fanSpeed] !== undefined ? fanSpeedNames[fanSpeed] : `Скорость ${fanSpeed}`;
+        info.push(`  Скорость вентилятора: ${fanSpeedName} (${fanSpeed})`);
+      }
+      
+      // Уставка температуры
+      const setpoint = state.setpoint;
+      if (setpoint !== undefined && setpoint !== null) {
+        info.push(`  Уставка: ${setpoint}°C`);
+      }
+      
+      // Значение (включен/выключен)
+      const value = state.value;
+      if (value !== undefined && value !== null) {
+        const valueNames = {
+          0: 'Выключен',
+          1: 'Включен',
+          false: 'Выключен',
+          true: 'Включен'
+        };
+        const valueName = valueNames[value] !== undefined ? valueNames[value] : value;
+        info.push(`  Состояние: ${valueName} (${value})`);
+      }
+      
+      // Синхронизация
+      const synced = state.synced;
+      if (synced !== undefined && synced !== null) {
+        info.push(`  Синхронизация: ${synced ? '✅ Синхронизировано' : '⚠️  Не синхронизировано'}`);
+      }
+      
+      // Привязка к MODBUS устройству
+      const bindValue = (state && state.bind) || device.bind;
+      if (bindValue) {
+        const bindParts = bindValue.split('/');
+        if (bindParts.length >= 3) {
+          const [modbusId, bindType, address] = bindParts;
+          info.push(`  Привязка к Modbus: ${modbusId}/MODBUS/${address}`);
+          
+          // Ищем MODBUS устройство
+          const modbusDevice = this.allDevices.find(d => d.id === modbusId);
+          if (modbusDevice) {
+            const modbusName = modbusDevice.code || modbusDevice.title || modbusDevice.name || modbusId;
+            info.push(`    MODBUS устройство: ${modbusName}`);
+            info.push(`    Адрес на шине: ${address}`);
+          }
+        }
       }
     }
     
