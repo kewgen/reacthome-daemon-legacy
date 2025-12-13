@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.13 (ручное управление версией)
+ * Версия: 1.0.14 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.13';
+const VERSION = '1.0.14';
 
 const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
@@ -3161,6 +3161,42 @@ class TerminalKitStatusDisplay {
       channels.push({ channelId, channelType: 'ao', channelIndex: i, channelState, linkedDevice });
     }
     
+    // Обработка групп каналов (group) - виртуальные каналы, объединяющие несколько физических
+    // Зачем: Некоторые устройства (например, шторы) привязаны к группам, а не к отдельным каналам
+    // Ищем все устройства, у которых bind указывает на группы актуатора
+    const groupBindings = new Map(); // Map<groupIndex, linkedDevice>
+    
+    this.allDevices.forEach(device => {
+      const deviceBind = device.bind || (this.deviceStates.get(device.id)?.state?.bind);
+      if (deviceBind && deviceBind.startsWith(`${actuatorId}/group/`)) {
+        const parts = deviceBind.split('/');
+        if (parts.length === 3 && parts[2]) {
+          const groupIndex = parseInt(parts[2], 10);
+          if (!isNaN(groupIndex)) {
+            // Если для этой группы еще нет привязки, или это первая найденная
+            if (!groupBindings.has(groupIndex)) {
+              groupBindings.set(groupIndex, device);
+            }
+          }
+        }
+      }
+    });
+    
+    // Добавляем найденные группы в список каналов
+    groupBindings.forEach((linkedDevice, groupIndex) => {
+      const channelId = `${actuatorId}/group/${groupIndex}`;
+      const channelData = this.deviceStates.get(channelId);
+      const channelState = channelData?.state || null;
+      
+      channels.push({ 
+        channelId, 
+        channelType: 'group', 
+        channelIndex: groupIndex, 
+        channelState, 
+        linkedDevice 
+      });
+    });
+    
     return channels;
   }
   
@@ -3762,7 +3798,11 @@ class TerminalKitStatusDisplay {
         if (binding.actuatorType) {
           info.push(`  Тип актуатора: ${DEVICE_TYPE_NAMES[binding.actuatorType] || `Тип${binding.actuatorType}`} (${binding.actuatorType})`);
         }
-        const channelTypeName = binding.channelType === 'do' ? 'DO' : binding.channelType === 'dim' ? 'DIM' : binding.channelType === 'ao' ? 'AO' : binding.channelType;
+        const channelTypeName = binding.channelType === 'do' ? 'DO' 
+          : binding.channelType === 'dim' ? 'DIM' 
+          : binding.channelType === 'ao' ? 'AO' 
+          : binding.channelType === 'group' ? 'GROUP'
+          : binding.channelType;
         info.push(`  Канал: ${channelTypeName}/${binding.channelIndex}`);
         if (binding.channelState) {
           const channelValue = binding.channelState.value !== undefined ? binding.channelState.value : '—';
@@ -3799,7 +3839,11 @@ class TerminalKitStatusDisplay {
         
         Object.keys(channelsByType).sort().forEach(channelType => {
           const typeChannels = channelsByType[channelType];
-          const typeName = channelType === 'do' ? 'Реле (DO)' : channelType === 'dim' ? 'Диммер (DIM)' : channelType === 'ao' ? 'Аналоговый выход (AO)' : channelType;
+          const typeName = channelType === 'do' ? 'Реле (DO)' 
+            : channelType === 'dim' ? 'Диммер (DIM)' 
+            : channelType === 'ao' ? 'Аналоговый выход (AO)' 
+            : channelType === 'group' ? 'Группы (GROUP)'
+            : channelType;
           
           info.push(`  ${typeName} каналы:`);
           
@@ -3811,9 +3855,15 @@ class TerminalKitStatusDisplay {
               ? `${channelValue} (0-255)` 
               : channel.channelType === 'do' 
                 ? (channelValue ? 'ВКЛ' : 'ВЫКЛ')
-                : `${channelValue}`;
+                : channel.channelType === 'group'
+                  ? (channelValue !== '—' ? `${channelValue}` : '—')
+                  : `${channelValue}`;
             
-            const channelTypeName = channel.channelType === 'do' ? 'DO' : channel.channelType === 'dim' ? 'DIM' : channel.channelType === 'ao' ? 'AO' : channel.channelType;
+            const channelTypeName = channel.channelType === 'do' ? 'DO' 
+              : channel.channelType === 'dim' ? 'DIM' 
+              : channel.channelType === 'ao' ? 'AO' 
+              : channel.channelType === 'group' ? 'GROUP'
+              : channel.channelType;
             
             // Формируем строку в формате: DIM/X: значение (диапазон) → Название (Тип) / Помещение
             let channelLine = `    ${channelTypeName}/${channel.channelIndex}: ${channelValueStr}`;
