@@ -5,6 +5,15 @@
  * WebSocket Proxy: Малинка ↔ Локальный сервер
  * ============================================================================
  * 
+ * Версия: 1.2.2
+ * 
+ * История версий:
+ * - 1.2.2 - Повышен порог beep до 60 сообщений в секунду
+ * - 1.2.1 - Счётчик блокировок выводится жёлтым цветом через слеш с отправляемыми
+ * - 1.2.0 - Добавлена блокировка сообщений local→pi по умолчанию
+ * - 1.1.0 - Добавлена защита от дублирования сообщений (дедупликация)
+ * - 1.0.0 - Начальная версия
+ * 
  * Прокси для двусторонней пересылки сообщений между вебсокетом малинки
  * и локальным вебсокет-сервером (копией умного дома).
  * 
@@ -149,6 +158,7 @@
  *                           'combined' - устройства + статистика прокси
  *                           не установлено/false - только статистика прокси
  *   DEVICE_DB_PATH        - путь к БД устройств (по умолчанию: ./var/db)
+ *   ALLOW_LOCAL_TO_PI     - разрешить пересылку сообщений local→pi (по умолчанию: false, блокировка включена)
  * 
  * ============================================================================
  * ОСОБЕННОСТИ И ВОЗМОЖНОСТИ
@@ -427,11 +437,21 @@ const LOCAL_WS_PORT = process.env.LOCAL_WS_PORT || '3000';
 const PI_WS_URL = `ws://${PI_HOST}:${PI_WS_PORT}`;
 const LOCAL_WS_URL = `ws://${LOCAL_WS_HOST}:${LOCAL_WS_PORT}`;
 
+// Версия прокси-сервиса
+// Зачем: Ручной версионинг для отслеживания изменений и отладки
+const PROXY_VERSION = '1.2.2';
+
+// Блокировка сообщений от локального сервера к малинке
+// Зачем: По умолчанию блокируем пересылку сообщений local→pi для предотвращения случайного воздействия на реальные устройства
+// Можно включить через переменную окружения ALLOW_LOCAL_TO_PI=true
+const BLOCK_LOCAL_TO_PI = process.env.ALLOW_LOCAL_TO_PI !== 'true'; // По умолчанию блокируем
+
 // Пути к файлам логов
 // Зачем: Определяем пути к файлам для логирования всех сообщений в обе стороны
 const LOGS_DIR = path.join(PROJECT_DIR, 'logs');
 const PI_MESSAGES_LOG_FILE = path.join(LOGS_DIR, 'pi-messages.log'); // Сообщения от малинки
 const TO_PI_MESSAGES_LOG_FILE = path.join(LOGS_DIR, 'to-pi-messages.log'); // Сообщения к малинке
+const DUPLICATES_LOG_FILE = path.join(LOGS_DIR, 'duplicates.log'); // Лог дубликатов сообщений
 
 // Создаём директорию для логов, если её нет
 // Зачем: Обеспечиваем наличие директории для записи логов сообщений от малинки
@@ -460,6 +480,11 @@ const INITIAL_CONNECTION_DELAY = 2000; // 2 секунды - пауза пере
 const RETRY_CONNECTION_DELAY = 1000; // 1 секунда - пауза перед повторной попыткой подключения
 const MIN_RECONNECT_INTERVAL = 10000; // 10 секунд - минимальный интервал между обработкой ошибок (защита от слишком частых попыток)
 
+// Конфигурация дедупликации сообщений
+// Зачем: Защита от циклического дублирования сообщений между малинкой и локальным сервером
+const DEDUP_WINDOW = 5000; // 5 секунд - окно времени для отслеживания дубликатов
+const DEDUP_MAX_ENTRIES = 10000; // Максимальное количество записей в кэше дедупликации
+
 // Состояние подключений
 // Зачем: Раздельное состояние для каждого подключения позволяет независимо управлять переподключениями
 let piWs = null;
@@ -473,6 +498,8 @@ let messagesToLocal = 0;
 let messagesFromLocal = 0;
 let messagesToPi = 0;
 let errors = 0; // Счетчик ошибок подключения (не ошибок отправки сообщений)
+let duplicatesIgnored = 0; // Счетчик игнорированных дубликатов
+let localToPiBlocked = 0; // Счетчик заблокированных сообщений local→pi
 
 // Счетчики для расчета скорости сообщений в секунду
 // Зачем: Отслеживаем количество сообщений за последнюю секунду для отображения скорости обработки
@@ -488,7 +515,7 @@ let messagesPerSecondToPi = 0;
 
 // Настройки звукового сигнала при превышении скорости
 // Зачем: Предупреждаем о высокой нагрузке звуковым сигналом для привлечения внимания
-const SPEED_THRESHOLD = 50; // Порог скорости сообщений в секунду для beep
+const SPEED_THRESHOLD = 60; // Порог скорости сообщений в секунду для beep
 const BEEP_COOLDOWN = 2000; // Минимальный интервал между beep'ами (2 секунды)
 let lastBeepTime = 0; // Время последнего beep'а
 
@@ -540,6 +567,13 @@ let localLastReconnectTime = 0; // Время последней попытки 
 // Зачем: Буферизация позволяет не терять сообщения при временной недоступности сервиса
 const piToLocalBuffer = []; // Буфер сообщений от малинки к локальному серверу
 const localToPiBuffer = []; // Буфер сообщений от локального сервера к малинке
+
+// Кэш для дедупликации сообщений
+// Зачем: Отслеживаем последние обработанные сообщения для предотвращения циклического дублирования
+// Структура: Map<id, Set<timestamp>>
+const dedupCache = new Map();
+let lastDedupCleanup = Date.now();
+const DEDUP_CLEANUP_INTERVAL = 60000; // 1 минута - интервал очистки кэша
 
 // Флаги для отслеживания предупреждений о переполнении буферов
 // Зачем: Предотвращаем засорение консоли повторяющимися предупреждениями
@@ -897,7 +931,13 @@ function renderProxyStats() {
   const speedFromLocal = hasActivityFromLocal ? ` (${messagesPerSecondFromLocal}/с вх)` : '';
   const speedToPi = hasActivityToPi ? ` (${messagesPerSecondToPi}/с исх)` : '';
   
-  const statsLine = `📊 Малинка${statusPi}: ${piSuccess}${speedToLocal}${speedFromPi}${bufferPi} | Локальный${statusLocal}: ${localSuccess}${speedToPi}${speedFromLocal}${bufferLocal} | Ошибок подключения: ${errors}${reconnectPi}${reconnectLocal}`;
+  // Зачем: Добавляем счётчик дубликатов для мониторинга
+  const duplicatesInfo = duplicatesIgnored > 0 ? ` | Дублей: ${duplicatesIgnored}` : '';
+  // Зачем: Выводим счётчик блокировок жёлтым цветом через слеш с отправляемыми сообщениями
+  const localStats = localToPiBlocked > 0 
+    ? `${localSuccess}\x1b[33m/${localToPiBlocked}\x1b[0m` 
+    : `${localSuccess}`;
+  const statsLine = `📊 Малинка${statusPi}: ${piSuccess}${speedToLocal}${speedFromPi}${bufferPi} | Локальный${statusLocal}: ${localStats}${speedToPi}${speedFromLocal}${bufferLocal} | Ошибок подключения: ${errors}${duplicatesInfo}${reconnectPi}${reconnectLocal}`;
   
   // Зачем: Очищаем предыдущую строку статистики и выводим новую для интерактивного обновления
   // Статистика всегда находится после таблицы устройств в последней строке
@@ -979,13 +1019,16 @@ const monitoringModeEnv = process.env.DEVICE_MONITORING_MODE;
 if (!((monitoringModeEnv === 'true' || monitoringModeEnv === 'combined') && DEVICE_MONITORING_ENABLED)) {
   console.log('╔═══════════════════════════════════════════════════════════════╗');
   console.log('║   WebSocket Proxy: Малинка ↔ Локальный сервер               ║');
+  console.log(`║   Версия: ${PROXY_VERSION.padEnd(47)} ║`);
   console.log('╚═══════════════════════════════════════════════════════════════╝');
   console.log('');
   console.log('📊 Конфигурация:');
   console.log(`   Малинка: ${PI_WS_URL}`);
   console.log(`   Локальный сервер: ${LOCAL_WS_URL}`);
+  console.log(`   Блокировка local→pi: ${BLOCK_LOCAL_TO_PI ? '✅ ВКЛЮЧЕНА' : '❌ ОТКЛЮЧЕНА'} ${BLOCK_LOCAL_TO_PI ? '(используйте ALLOW_LOCAL_TO_PI=true для отключения)' : ''}`);
   console.log(`   Лог сообщений от малинки: ${PI_MESSAGES_LOG_FILE}`);
   console.log(`   Лог сообщений к малинке: ${TO_PI_MESSAGES_LOG_FILE}`);
+  console.log(`   Лог дубликатов: ${DUPLICATES_LOG_FILE}`);
   console.log('');
 }
 
@@ -1025,6 +1068,128 @@ function logPiMessageToFile(data, messageNumber, messageType, parsedMessage) {
     });
   } catch (error) {
     console.error(`❌ Ошибка логирования сообщения от малинки: ${error.message}`);
+  }
+}
+
+/**
+ * Проверка и очистка кэша дедупликации
+ * Зачем: Периодически очищаем старые записи из кэша для предотвращения утечек памяти
+ */
+function cleanupDedupCache() {
+  const now = Date.now();
+  
+  // Очищаем кэш каждую минуту
+  if (now - lastDedupCleanup < DEDUP_CLEANUP_INTERVAL) {
+    return;
+  }
+  
+  lastDedupCleanup = now;
+  
+  // Очищаем старые timestamp'ы для каждого ID
+  let totalCleaned = 0;
+  for (const [id, timestamps] of dedupCache.entries()) {
+    const beforeSize = timestamps.size;
+    
+    // Удаляем timestamp'ы старше DEDUP_WINDOW
+    for (const timestamp of timestamps) {
+      if (now - timestamp > DEDUP_WINDOW) {
+        timestamps.delete(timestamp);
+      }
+    }
+    
+    // Удаляем пустые записи
+    if (timestamps.size === 0) {
+      dedupCache.delete(id);
+    }
+    
+    totalCleaned += (beforeSize - timestamps.size);
+  }
+  
+  // Если кэш слишком большой, удаляем самые старые записи
+  if (dedupCache.size > DEDUP_MAX_ENTRIES) {
+    const entriesToRemove = dedupCache.size - DEDUP_MAX_ENTRIES;
+    const sortedEntries = Array.from(dedupCache.entries())
+      .sort((a, b) => {
+        const aMin = Math.min(...a[1]);
+        const bMin = Math.min(...b[1]);
+        return aMin - bMin;
+      });
+    
+    for (let i = 0; i < entriesToRemove; i++) {
+      dedupCache.delete(sortedEntries[i][0]);
+    }
+  }
+}
+
+/**
+ * Проверка на дубликат сообщения
+ * Зачем: Предотвращаем циклическое дублирование сообщений между малинкой и локальным сервером
+ * 
+ * @param {string} id - ID устройства или объекта
+ * @param {number} timestamp - Timestamp из payload сообщения
+ * @returns {boolean} - true если это дубликат, false если новое сообщение
+ */
+function isDuplicate(id, timestamp) {
+  if (!id || !timestamp || typeof timestamp !== 'number') {
+    return false; // Не можем проверить, пропускаем
+  }
+  
+  // Периодическая очистка кэша
+  cleanupDedupCache();
+  
+  // Получаем или создаем Set timestamp'ов для этого ID
+  if (!dedupCache.has(id)) {
+    dedupCache.set(id, new Set());
+  }
+  
+  const timestamps = dedupCache.get(id);
+  
+  // Проверяем, есть ли такой timestamp в окне DEDUP_WINDOW
+  const now = Date.now();
+  const windowStart = now - DEDUP_WINDOW;
+  
+  // Очищаем старые timestamp'ы для этого ID
+  for (const ts of timestamps) {
+    if (ts < windowStart) {
+      timestamps.delete(ts);
+    }
+  }
+  
+  // Проверяем дубликат
+  if (timestamps.has(timestamp)) {
+    return true; // Дубликат
+  }
+  
+  // Добавляем новый timestamp
+  timestamps.add(timestamp);
+  return false; // Новое сообщение
+}
+
+/**
+ * Логирование дубликата сообщения
+ * Зачем: Записываем каждый дубликат в отдельный лог-файл для анализа и отладки
+ * 
+ * @param {object} message - Распарсенное JSON сообщение
+ * @param {string} direction - Направление: 'pi→local' или 'local→pi'
+ */
+function logDuplicate(message, direction) {
+  try {
+    const timestamp = new Date().toISOString();
+    const logEntry = `[${timestamp}] ДУБЛИКАТ [${direction}]\n` +
+      `ID: ${message.id || 'N/A'}\n` +
+      `Type: ${message.type || 'N/A'}\n` +
+      `Timestamp: ${message.payload?.timestamp || 'N/A'}\n` +
+      `Содержимое: ${JSON.stringify(message, null, 2)}\n` +
+      '─'.repeat(80) + '\n';
+    
+    // Асинхронная запись в файл (не блокирует основной поток)
+    fs.appendFile(DUPLICATES_LOG_FILE, logEntry, 'utf8', (err) => {
+      if (err) {
+        console.error(`❌ Ошибка записи дубликата в лог-файл: ${err.message}`);
+      }
+    });
+  } catch (error) {
+    console.error(`❌ Ошибка логирования дубликата: ${error.message}`);
   }
 }
 
@@ -1288,6 +1453,16 @@ function setupPiWebSocket() {
       updateDeviceState(parsedMessage.id, parsedMessage.payload);
     }
 
+    // Зачем: Проверяем на дубликаты перед пересылкой для предотвращения циклического дублирования
+    if (parsedMessage && parsedMessage.type === 'ACTION_SET' && parsedMessage.id && parsedMessage.payload && typeof parsedMessage.payload.timestamp === 'number') {
+      if (isDuplicate(parsedMessage.id, parsedMessage.payload.timestamp)) {
+        // Дубликат обнаружен - игнорируем и логируем
+        duplicatesIgnored++;
+        logDuplicate(parsedMessage, 'pi→local');
+        return; // Не пересылаем дубликат
+      }
+    }
+
     // Пересылаем на локальный сервер или буферизуем
     if (localConnected && localWs && localWs.readyState === WebSocket.OPEN) {
       try {
@@ -1543,6 +1718,26 @@ function setupLocalWebSocket() {
     // Зачем: Детальное логирование в файл для анализа, без засорения консоли
     logToPiMessageToFile(data, messagesFromLocal, messageType, parsedMessage);
 
+    // Зачем: Блокируем сообщения local→pi по умолчанию для предотвращения случайного воздействия на реальные устройства
+    if (BLOCK_LOCAL_TO_PI) {
+      localToPiBlocked++;
+      // Логируем заблокированное сообщение
+      if (parsedMessage) {
+        logDuplicate(parsedMessage, 'local→pi [ЗАБЛОКИРОВАНО]');
+      }
+      return; // Не пересылаем заблокированное сообщение
+    }
+
+    // Зачем: Проверяем на дубликаты перед пересылкой для предотвращения циклического дублирования
+    if (parsedMessage && parsedMessage.type === 'ACTION_SET' && parsedMessage.id && parsedMessage.payload && typeof parsedMessage.payload.timestamp === 'number') {
+      if (isDuplicate(parsedMessage.id, parsedMessage.payload.timestamp)) {
+        // Дубликат обнаружен - игнорируем и логируем
+        duplicatesIgnored++;
+        logDuplicate(parsedMessage, 'local→pi');
+        return; // Не пересылаем дубликат
+      }
+    }
+
     // Пересылаем на малинку или буферизуем
     if (piConnected && piWs && piWs.readyState === WebSocket.OPEN) {
       try {
@@ -1752,7 +1947,13 @@ setInterval(() => {
   const speedToPi = hasActivityToPi ? ` (${messagesPerSecondToPi}/с исх)` : '';
   
   // Зачем: Показываем успешно отправленные сообщения, размер буфера и скорость обработки отдельно
-  const statsLine = `📊 Малинка${statusPi}: ${piSuccess}${speedToLocal}${speedFromPi}${bufferPi} | Локальный${statusLocal}: ${localSuccess}${speedToPi}${speedFromLocal}${bufferLocal} | Ошибок: ${errors}${reconnectPi}${reconnectLocal}`;
+  // Добавляем счётчик дубликатов для мониторинга
+  const duplicatesInfo = duplicatesIgnored > 0 ? ` | Дублей: ${duplicatesIgnored}` : '';
+  // Зачем: Выводим счётчик блокировок жёлтым цветом через слеш с отправляемыми сообщениями
+  const localStats = localToPiBlocked > 0 
+    ? `${localSuccess}\x1b[33m/${localToPiBlocked}\x1b[0m` 
+    : `${localSuccess}`;
+  const statsLine = `📊 Малинка${statusPi}: ${piSuccess}${speedToLocal}${speedFromPi}${bufferPi} | Локальный${statusLocal}: ${localStats}${speedToPi}${speedFromLocal}${bufferLocal} | Ошибок: ${errors}${duplicatesInfo}${reconnectPi}${reconnectLocal}`;
   
   // Зачем: Обновляем статистику в реальном времени в одной строке консоли
   // Используем ANSI escape-коды для очистки строки и возврат каретки
@@ -1815,6 +2016,12 @@ process.on('SIGINT', () => {
   console.log(`   Малинка → Локальный: ${piSuccess}✅/${piFailed}❌ (получено: ${messagesFromPi}, отправлено: ${messagesToLocal})`);
   console.log(`   Локальный → Малинка: ${localSuccess}✅/${localFailed}❌ (получено: ${messagesFromLocal}, отправлено: ${messagesToPi})`);
   console.log(`   Ошибок: ${errors}`);
+  if (duplicatesIgnored > 0) {
+    console.log(`   Дубликатов игнорировано: ${duplicatesIgnored}`);
+  }
+  if (localToPiBlocked > 0) {
+    console.log(`   Заблокировано сообщений local→pi: ${localToPiBlocked}`);
+  }
   if (piToLocalBuffer.length > 0 || localToPiBuffer.length > 0) {
     console.log(`   В буферах: малинка→локальный ${piToLocalBuffer.length}, локальный→малинка ${localToPiBuffer.length}`);
   }
