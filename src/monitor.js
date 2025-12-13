@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.33 (ручное управление версией)
+ * Версия: 1.0.34 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.33';
+const VERSION = '1.0.34';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -2215,6 +2215,7 @@ class TerminalKitStatusDisplay {
       { label: 'Сенсор', value: 'Сенсор' },
       { label: 'Панель', value: 'Панель' },
       { label: 'Потребитель', value: 'Потребитель' },
+      { label: 'Интеграция', value: 'Интеграция' },
     ];
 
     addRow({ label: 'Категории:', kind: 'title' });
