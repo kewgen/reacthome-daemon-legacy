@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.14 (ручное управление версией)
+ * Версия: 1.0.18 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.14';
+const VERSION = '1.0.18';
 
 const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
@@ -852,8 +852,29 @@ function getDeviceIcon(deviceType, category) {
 }
 
 // Получаем имя устройства из payload WebSocket
+// Зачем: Всегда выводим "code title" для единообразного отображения
 function getDeviceName(payload) {
-  return payload.name || payload.title || payload.code || 'Без названия';
+  const code = payload.code || '';
+  const title = payload.title || '';
+  
+  // Формируем "code title" если оба есть
+  if (code && title) {
+    return `${code} ${title}`;
+  }
+  // Если есть только code
+  if (code) {
+    return code;
+  }
+  // Если есть только title
+  if (title) {
+    return title;
+  }
+  // Если есть name (fallback)
+  if (payload.name) {
+    return payload.name;
+  }
+  // Если ничего нет
+  return 'Без названия';
 }
 
 // Загружаем устройства и помещения через WebSocket
@@ -2786,6 +2807,36 @@ class TerminalKitStatusDisplay {
         }
       }
       
+      // Специальная обработка строк с маркером __GREEN_VALUE__ (каналы актуаторов)
+      if (line.includes('__GREEN_VALUE__')) {
+        const greenMarkerIndex = line.indexOf('__GREEN_VALUE__');
+        const beforeMarker = line.substring(0, greenMarkerIndex);
+        const afterMarker = line.substring(greenMarkerIndex + '__GREEN_VALUE__'.length);
+        
+        // Находим значение после маркера (до → или конца строки)
+        const valueEndIndex = afterMarker.indexOf(' →');
+        const valueText = valueEndIndex >= 0 ? afterMarker.substring(0, valueEndIndex) : afterMarker;
+        const afterValue = valueEndIndex >= 0 ? afterMarker.substring(valueEndIndex) : '';
+        
+        // Выводим часть до маркера
+        term(beforeMarker);
+        
+        // Выводим значение зелёным цветом
+        term.green(valueText);
+        term.styleReset();
+        
+        // Выводим часть после значения
+        term(afterValue);
+        
+        // Заполняем оставшееся пространство
+        const totalLength = beforeMarker.length + valueText.length + afterValue.length;
+        const maxWidth = this.rightWidth - 2;
+        if (totalLength < maxWidth) {
+          term(' '.repeat(maxWidth - totalLength));
+        }
+        return;
+      }
+      
       // Обрезаем строку до ширины панели минус рамки
       const truncated = line.substring(0, this.rightWidth - 2);
       const maxWidth = this.rightWidth - 2;
@@ -3851,13 +3902,40 @@ class TerminalKitStatusDisplay {
             const channelValue = channel.channelState && channel.channelState.value !== undefined 
               ? channel.channelState.value 
               : '—';
-            const channelValueStr = channel.channelType === 'dim' 
-              ? `${channelValue} (0-255)` 
-              : channel.channelType === 'do' 
-                ? (channelValue ? 'ВКЛ' : 'ВЫКЛ')
-                : channel.channelType === 'group'
-                  ? (channelValue !== '—' ? `${channelValue}` : '—')
-                  : `${channelValue}`;
+            const channelInverse = channel.channelState && channel.channelState.inverse !== undefined
+              ? channel.channelState.inverse
+              : false;
+            
+            // Зачем: Формируем строковое представление значения канала
+            // Для DO: учитываем inverse (если inverse && false, то "on")
+            let channelValueStr;
+            let isChannelOn = false;
+            
+            if (channel.channelType === 'dim') {
+              channelValueStr = `${channelValue}`;
+              // Для DIM: значение > 0
+              isChannelOn = typeof channelValue === 'number' && channelValue > 0;
+            } else if (channel.channelType === 'do') {
+              // Для DO: если inverse && false, то "on", иначе стандартная логика
+              if (channelInverse && channelValue === false) {
+                channelValueStr = 'on';
+                isChannelOn = true; // inverse: false означает включено
+              } else {
+                // Любое truthy значение (кроме '—', false, 0, '') = "on"
+                const isOn = channelValue && channelValue !== '—' && channelValue !== false && channelValue !== 0 && channelValue !== '';
+                channelValueStr = isOn ? 'on' : 'off';
+                isChannelOn = isOn;
+              }
+            } else if (channel.channelType === 'group') {
+              channelValueStr = (channelValue !== '—' ? `${channelValue}` : '—');
+              isChannelOn = channelValue !== '—' && channelValue !== false && channelValue !== 0 && channelValue !== '';
+            } else {
+              channelValueStr = `${channelValue}`;
+              isChannelOn = channelValue === true || 
+                           channelValue === 1 || 
+                           (typeof channelValue === 'number' && channelValue > 0) ||
+                           channelValue === 'on';
+            }
             
             const channelTypeName = channel.channelType === 'do' ? 'DO' 
               : channel.channelType === 'dim' ? 'DIM' 
@@ -3866,7 +3944,9 @@ class TerminalKitStatusDisplay {
               : channel.channelType;
             
             // Формируем строку в формате: DIM/X: значение (диапазон) → Название (Тип) / Помещение
-            let channelLine = `    ${channelTypeName}/${channel.channelIndex}: ${channelValueStr}`;
+            // Добавляем маркер для зелёного цвета, если канал включен (on, true, > 0)
+            const valueMarker = isChannelOn ? '__GREEN_VALUE__' : '';
+            let channelLine = `    ${channelTypeName}/${channel.channelIndex}: ${valueMarker}${channelValueStr}`;
             
             if (channel.linkedDevice) {
               // Формируем отображение имени устройства с приоритетом code → title → name
