@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.25 (ручное управление версией)
+ * Версия: 1.0.26 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -1738,7 +1738,7 @@ function drawBox(x, y, width, height, title = null) {
 
 // Класс для управления UI с terminal-kit
 class TerminalKitStatusDisplay {
-  constructor(devices, sites, locationName = 'Локация') {
+  constructor(devices, sites, locationName = 'Локация', updateInfo = null) {
     if (!term.isTTY) {
       throw new Error('Требуется интерактивный терминал (TTY)');
     }
@@ -1749,6 +1749,7 @@ class TerminalKitStatusDisplay {
     this.sites = sites;
     this.locationName = locationName; // Название локации для отображения в заголовке
     this.version = VERSION; // Версия для отображения в заголовке
+    this.updateInfo = updateInfo || null; // Информация о проверке обновлений (updateAvailable, remoteVersion)
     this.allDevices = devices;
     this.devicesByMac = new Map();
     devices.forEach(device => {
@@ -2624,13 +2625,29 @@ class TerminalKitStatusDisplay {
     // Используем название локации из конструктора (загружено из PROJECT или env)
     const status = this.isConnected ? '🟢 ПОДКЛЮЧЕНО' : '🔴 ОТКЛЮЧЕНО';
     const time = new Date().toLocaleTimeString('ru-RU');
-    const headerText = `${this.locationName} | ${status} | ${time} | v${this.version}`;
+    
+    // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый)
+    const headerPrefix = `${this.locationName} | ${status} | ${time} | v`;
+    const versionText = this.version;
+    const headerText = headerPrefix + versionText;
     
     // Обновляем заголовок только если он изменился (экономим escape-последовательности)
     if (this.lastHeaderText !== headerText) {
       this.lastHeaderText = headerText;
       term.moveTo(1, 1);
-      term.bold.cyan(headerText);
+      
+      // Выводим префикс заголовка
+      term.bold.cyan(headerPrefix);
+      
+      // Выводим версию с цветом в зависимости от актуальности
+      // Зелёный - если версия актуальна или новее, жёлтый - если есть обновление
+      const isUpdateAvailable = this.updateInfo && this.updateInfo.updateAvailable === true;
+      if (isUpdateAvailable) {
+        term.bold.yellow(versionText); // Жёлтый - есть обновление
+      } else {
+        term.bold.green(versionText); // Зелёный - версия актуальна
+      }
+      
       term(' '.repeat(this.width - headerText.length));
     }
   }
@@ -5275,7 +5292,7 @@ async function main() {
 
     // Зачем: Перед подключением к WebSocket проверяем, нет ли более свежей версии монитора
     console.log('[INFO] Проверка обновлений монитора...');
-    await checkForRemoteUpdateAndMaybeApply();
+    const updateInfo = await checkForRemoteUpdateAndMaybeApply();
     
     // Загружаем устройства и помещения полностью через WebSocket
     console.log('Подключение к WebSocket для загрузки устройств и помещений...');
@@ -5290,8 +5307,8 @@ async function main() {
     console.log(`Загружено ${devices.length} устройств и ${sites.length} помещений`);
     console.log(`Локация: ${locationName}`);
     
-    // Создаем UI с названием локации
-    const display = new TerminalKitStatusDisplay(devices, sites, locationName);
+    // Создаем UI с названием локации и информацией об обновлениях
+    const display = new TerminalKitStatusDisplay(devices, sites, locationName, updateInfo);
     
     // Подключаемся к WebSocket для получения обновлений состояния
     const ws = new WebSocket(WS_URI);
