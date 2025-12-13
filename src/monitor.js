@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.26 (ручное управление версией)
+ * Версия: 1.0.27 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.25';
+const VERSION = '1.0.27';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -915,7 +915,6 @@ const CONSUMER_TYPES = [
   'light_220', 'light_LED', 'light_RGB', 'light_led',
   'socket_220', 'valve_heating', 'valve_water',
   'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP', // Добавляем 'fan' (строчными) для совместимости с устройствами типа 'fan'
-  'thermostat', 'hygrostat', 'co2_stat',
   'curtains', 'curtain', 'blind', 'blinds', 'roller', // Шторы, жалюзи, роллеты - потребители
   'multiroom', // Мультирум аудио - потребитель
 ];
@@ -924,6 +923,9 @@ const CONSUMER_TYPES = [
 const SENSOR_STRING_TYPES = [
   'leakage_sensor', // Датчик протечки
   'reed', // Геркон (магнитный датчик открытия)
+  'thermostat', // Термостат - перенесён из потребителей
+  'hygrostat', // Гигростат - перенесён из потребителей
+  'co2_stat', // CO2 стат - перенесён из потребителей
 ];
 
 // Типы интеграций с внешним оборудованием (строковые физические устройства)
@@ -1462,7 +1464,7 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
           const consumerArrays = ['light_220', 'light_LED', 'light_RGB', 'light_led', 
                                   'socket_220', 'valve_heating', 'valve_water', 
                                   'warm_floor', 'AC', 'FAN', 'BOILER', 'PUMP',
-                                  'thermostat', 'hygrostat', 'co2_stat'];
+                                  'thermostat', 'hygrostat', 'co2_stat']; // Термостаты остаются в массивах помещений, но категория изменена на Сенсор
           consumerArrays.forEach(arrayName => {
             if (payload[arrayName] && Array.isArray(payload[arrayName])) {
               payload[arrayName].forEach(consumerId => {
@@ -3927,12 +3929,20 @@ class TerminalKitStatusDisplay {
       info.push(`  modified: —`);
     }
     
-    // Специальная секция для термостатов - показываем bind к DI, sensor и скрипты
-    const isThermostat = device.type === 'thermostat' || device.type === 'THERMOSTAT';
+    // Специальная секция для термостатов, гигростатов и CO2 статов - показываем bind к DI, sensor и скрипты
+    // Зачем: Термостаты, гигростаты и CO2 статы теперь сенсоры, но имеют специальную логику отображения
+    const isThermostat = device.type === 'thermostat' || device.type === 'THERMOSTAT' ||
+                         device.type === 'hygrostat' || device.type === 'HYGROSTAT' ||
+                         device.type === 'co2_stat' || device.type === 'CO2_STAT';
     
     if (isThermostat) {
+      const thermostatTypeName = device.type === 'thermostat' || device.type === 'THERMOSTAT' ? 'термостатом'
+        : device.type === 'hygrostat' || device.type === 'HYGROSTAT' ? 'гигростатом'
+        : device.type === 'co2_stat' || device.type === 'CO2_STAT' ? 'CO2 статом'
+        : 'термостатом';
+      
       info.push('');
-      info.push(`Управление термостатом:`);
+      info.push(`Управление ${thermostatTypeName}:`);
       
       // Bind к DI каналу (обычно DI/4 сенсорного модуля S4)
       const bindValue = (state && state.bind) || device.bind;
@@ -4047,11 +4057,17 @@ class TerminalKitStatusDisplay {
     }
     
     // Связь потребителя с актуатором (для не-термостатов)
+    // Зачем: Термостаты, гигростаты и CO2 статы теперь сенсоры, но логика привязки к актуатору остаётся
     const isConsumer = device.category === 'Потребитель' || 
                        (typeof device.type === 'string' && CONSUMER_TYPES.includes(device.type));
     const bindValue = (state && state.bind) || device.bind;
     
-    if (isConsumer && !isThermostat && bindValue) {
+    // Проверяем, является ли устройство термостатом (независимо от категории)
+    const isThermostatType = device.type === 'thermostat' || device.type === 'THERMOSTAT' ||
+                             device.type === 'hygrostat' || device.type === 'HYGROSTAT' ||
+                             device.type === 'co2_stat' || device.type === 'CO2_STAT';
+    
+    if (isConsumer && !isThermostatType && bindValue) {
       info.push('');
       info.push(`Связь с актуатором:`);
       const stateWithBind = state ? { ...state, bind: bindValue } : { bind: bindValue };
@@ -4078,7 +4094,7 @@ class TerminalKitStatusDisplay {
         info.push(`  Bind: ${bindValue}`);
         info.push(`  ⚠️  Актуатор не найден`);
       }
-    } else if (isConsumer && !isThermostat) {
+    } else if (isConsumer && !isThermostatType) {
       info.push('');
       info.push(`Связь с актуатором:`);
       info.push(`  ⚠️  Не привязан к актуатору (bind отсутствует)`);
