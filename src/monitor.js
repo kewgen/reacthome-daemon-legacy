@@ -2876,10 +2876,15 @@ class TerminalKitStatusDisplay {
       const isInverseTrueValueFalse = deviceInverse === true && deviceValue === false;
       const shouldBeGreen = isValueGreaterThanZero || isValueTrue || isInverseTrueValueFalse;
       
-      // Выводим иконку в фиксированном пространстве (3 символа: иконка + пробел, дополняется до 3х)
-      // Это обеспечивает выравнивание текста независимо от визуальной ширины эмодзи
-      const iconWithSpace = icon ? `${icon} ` : '  ';
-      term(iconWithSpace.padEnd(iconSpace));
+      // Выводим иконку в фиксированном пространстве (3 визуальных символа: иконка + 1 пробел)
+      // Зачем: Обеспечиваем одинаковое расстояние от иконки до названия для всех устройств
+      // Эмодзи занимают 2 визуальных символа в терминале, добавляем 1 пробел = 3 визуальных символа
+      if (icon) {
+        term(icon); // Выводим иконку (2 визуальных символа)
+        term(' ');  // Добавляем один пробел после иконки (итого 3 визуальных символа)
+      } else {
+        term('   '); // Если иконки нет, выводим 3 пробела для сохранения выравнивания
+      }
       if (shouldBeGreen) {
         term.green(namePadded); // Зелёный цвет для включенных устройств (value > 0, value: true или inverse: true && value: false)
       } else {
