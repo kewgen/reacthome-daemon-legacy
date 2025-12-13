@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.19 (ручное управление версией)
+ * Версия: 1.0.23 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,9 +585,168 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.19';
+const VERSION = '1.0.23';
 
-const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
+// Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
+const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
+
+// Зачем: Определяем адрес WebSocket из переменной окружения, аргумента командной строки или используем дефолт
+const getWebSocketUri = () => {
+  // 1. Проверяем аргумент командной строки (--ws-uri или первый позиционный аргумент)
+  const args = process.argv.slice(2);
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '--ws-uri' && args[i + 1]) {
+      return args[i + 1];
+    }
+    if (args[i].startsWith('--ws-uri=')) {
+      return args[i].substring('--ws-uri='.length);
+    }
+    // Если первый аргумент не начинается с --, считаем его адресом WebSocket
+    if (i === 0 && !args[i].startsWith('--')) {
+      return args[i];
+    }
+  }
+  // 2. Проверяем переменную окружения
+  if (process.env.REACTHOME_WS_URI) {
+    return process.env.REACTHOME_WS_URI;
+  }
+  // 3. Дефолтное значение
+  return 'ws://localhost:3000';
+};
+
+const WS_URI = getWebSocketUri(); // По умолчанию подключаемся к локальному WebSocket серверу
+
+// Зачем: Проверяем наличие более свежей версии скрипта на GitHub и предлагаем обновиться
+const shouldCheckUpdates = () => {
+  // Можно отключить проверку, если сеть недоступна/не нужна
+  if (process.env.MONITOR_UPDATE_CHECK === '0' || process.env.MONITOR_UPDATE_CHECK === 'false') return false;
+
+  // CLI флаги:
+  //   --no-update-check
+  //   --check-update (только проверить и выйти кодом 0/2)
+  const args = process.argv.slice(2);
+  if (args.includes('--no-update-check')) return false;
+  return true;
+};
+
+const isCheckUpdateOnlyMode = () => {
+  const args = process.argv.slice(2);
+  return args.includes('--check-update');
+};
+
+const isSelfUpdateForced = () => {
+  const args = process.argv.slice(2);
+  return args.includes('--self-update') || args.includes('--update');
+};
+
+// Зачем: Корректное сравнение semver (x.y.z) без внешних зависимостей
+const compareSemver = (a, b) => {
+  const pa = String(a || '').split('.').map(n => parseInt(n, 10));
+  const pb = String(b || '').split('.').map(n => parseInt(n, 10));
+  for (let i = 0; i < 3; i++) {
+    const na = Number.isFinite(pa[i]) ? pa[i] : 0;
+    const nb = Number.isFinite(pb[i]) ? pb[i] : 0;
+    if (na > nb) return 1;
+    if (na < nb) return -1;
+  }
+  return 0;
+};
+
+// Зачем: Получаем версию из содержимого monitor.js (const VERSION = 'x.y.z';)
+const extractVersionFromSource = (sourceText) => {
+  const m = String(sourceText || '').match(/const\s+VERSION\s*=\s*['"](\d+\.\d+\.\d+)['"]/);
+  return m ? m[1] : null;
+};
+
+// Зачем: Неблокирующая загрузка удалённой версии и (опционально) обновление текущего файла
+const fetchRemoteMonitorSource = async (url, timeoutMs = 2500) => {
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: controller.signal, headers: { 'cache-control': 'no-cache' } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(t);
+  }
+};
+
+// Зачем: Спросить пользователя (если есть TTY) и вернуть true/false
+const askYesNo = async (question) => {
+  if (!process.stdin.isTTY) return false;
+  const readline = require('readline');
+  return await new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(question, (answer) => {
+      rl.close();
+      const a = String(answer || '').trim().toLowerCase();
+      resolve(a === 'y' || a === 'yes' || a === 'д' || a === 'да');
+    });
+  });
+};
+
+// Зачем: Проверка обновления и предложение загрузки
+const checkForRemoteUpdateAndMaybeApply = async () => {
+  if (!shouldCheckUpdates()) return { checked: false };
+
+  let remoteSource = null;
+  let remoteVersion = null;
+
+  try {
+    remoteSource = await fetchRemoteMonitorSource(MONITOR_REMOTE_RAW_URL);
+    remoteVersion = extractVersionFromSource(remoteSource);
+  } catch (e) {
+    // Не мешаем работе монитора, просто тихо пропускаем (включаем только короткий INFO)
+    const msg = e && e.name === 'AbortError' ? 'таймаут' : (e && e.message ? e.message : String(e));
+    console.log(`[INFO] Проверка обновлений пропущена: ${msg}`);
+    return { checked: true, error: msg };
+  }
+
+  if (!remoteVersion) {
+    console.log('[INFO] Проверка обновлений: не удалось определить версию удалённого скрипта');
+    return { checked: true, error: 'no-remote-version' };
+  }
+
+  const cmp = compareSemver(remoteVersion, VERSION);
+  if (cmp <= 0) {
+    if (isCheckUpdateOnlyMode()) {
+      console.log(`[INFO] Обновлений нет. Локальная версия: v${VERSION}`);
+      process.exit(0);
+    }
+    return { checked: true, updateAvailable: false, remoteVersion };
+  }
+
+  // Есть новая версия
+  console.log(`[INFO] Доступна новая версия монитора: v${VERSION} → v${remoteVersion}`);
+  console.log(`[INFO] Источник: ${MONITOR_REMOTE_RAW_URL}`);
+  console.log(`[INFO] Обновление перезапишет текущий файл: ${__filename}`);
+
+  if (isCheckUpdateOnlyMode()) {
+    // 2 = "есть обновление" (удобно для скриптов)
+    process.exit(2);
+  }
+
+  const shouldUpdate = isSelfUpdateForced()
+    ? true
+    : await askYesNo('Загрузить и применить обновление сейчас? (y/N): ');
+
+  if (!shouldUpdate) {
+    console.log('[INFO] Обновление пропущено пользователем');
+    return { checked: true, updateAvailable: true, remoteVersion, applied: false };
+  }
+
+  try {
+    // Важно: не создаём временных файлов (правило про создание файлов), перезаписываем напрямую
+    fs.writeFileSync(__filename, remoteSource, 'utf8');
+    console.log('[INFO] Обновление применено. Перезапустите команду reacthome-monitor.');
+    process.exit(0);
+  } catch (e) {
+    const msg = e && e.message ? e.message : String(e);
+    console.error(`[ERROR] Не удалось применить обновление: ${msg}`);
+    return { checked: true, updateAvailable: true, remoteVersion, applied: false, error: msg };
+  }
+};
+
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
@@ -908,11 +1067,35 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
     }, 10000);
     
     // Обработка ошибок подключения
+    // Зачем: Улучшенная обработка ошибок с более информативными сообщениями
     ws.on('error', (error) => {
-      console.error(`[ERROR] Ошибка WebSocket: ${error.message}`);
+      const errorMessage = error.message || error.code || error.toString() || 'Неизвестная ошибка';
+      const errorCode = error.code || '';
+      
+      console.error(`[ERROR] Ошибка WebSocket: ${errorMessage}`);
+      if (errorCode) {
+        console.error(`[ERROR] Код ошибки: ${errorCode}`);
+      }
+      
       clearTimeout(timeoutId);
       clearTimeout(connectionTimeoutId);
-      reject(new Error(`Ошибка подключения к WebSocket: ${error.message}`));
+      
+      // Формируем более информативное сообщение об ошибке
+      let userMessage = `Ошибка подключения к WebSocket`;
+      
+      if (errorCode === 'ECONNREFUSED' || errorMessage.includes('ECONNREFUSED')) {
+        userMessage = `Не удалось подключиться к ${wsUri}. Сервер не запущен или недоступен. Проверьте, что сервер запущен на порту 3000.`;
+      } else if (errorCode === 'ENOTFOUND' || errorMessage.includes('ENOTFOUND') || errorMessage.includes('getaddrinfo')) {
+        userMessage = `Не удалось найти сервер по адресу ${wsUri}. Проверьте правильность адреса.`;
+      } else if (errorCode === 'ETIMEDOUT' || errorMessage.includes('ETIMEDOUT') || errorMessage.includes('timeout')) {
+        userMessage = `Превышено время ожидания подключения к ${wsUri}. Сервер может быть недоступен.`;
+      } else if (errorMessage && errorMessage.trim() !== '') {
+        userMessage = `Ошибка подключения к ${wsUri}: ${errorMessage}`;
+      } else {
+        userMessage = `Не удалось подключиться к ${wsUri}. Проверьте, что сервер запущен и доступен.`;
+      }
+      
+      reject(new Error(userMessage));
     });
     
     ws.on('open', () => {
@@ -3022,7 +3205,7 @@ class TerminalKitStatusDisplay {
       this.wsOutPerSecond = '0.0';
     }
     
-    const statsText = `Всего: ${stats.total} | Показано: ${stats.visible} | Ready: ${stats.ready} | Not Ready: ${stats.notReady} | In: ${this.wsInPerSecond}/с | Out: ${this.wsOutPerSecond}/с`;
+    const statsText = `Всего: ${stats.total} | Ready: ${stats.ready} | Not Ready: ${stats.notReady} | In: ${this.wsInPerSecond}/с | Out: ${this.wsOutPerSecond}/с`;
     const hotkeysText = `[Tab: панели] [c: копировать устройство] [y+c: копировать строку] [q: выход]`;
     
     // Выводим статистику слева
@@ -5076,9 +5259,13 @@ async function main() {
   try {
     // Инициализируем глобальные потоки логирования WebSocket
     initGlobalWsLogStreams();
+
+    // Зачем: Перед подключением к WebSocket проверяем, нет ли более свежей версии монитора
+    await checkForRemoteUpdateAndMaybeApply();
     
     // Загружаем устройства и помещения полностью через WebSocket
     console.log('Подключение к WebSocket для загрузки устройств и помещений...');
+    console.log(`[INFO] Используется адрес WebSocket: ${WS_URI}`);
     const { devices, sites, locationName } = await loadDevicesAndSitesViaWebSocket(WS_URI);
     
     if (devices.length === 0) {
