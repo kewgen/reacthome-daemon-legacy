@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.37 (ручное управление версией)
+ * Версия: 1.0.38 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -1298,7 +1298,9 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
             return;
           }
           
-          let siteId = payload.site;
+          // Для актуаторов site берется из WebSocket (payload.site или state.site)
+          // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
+          let siteId = payload.site || (payload.state && payload.state.site);
           let siteName = null;
           
           if (siteId) {
@@ -1547,89 +1549,9 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
         return channelConfigs[deviceType] || null;
       };
       
-      for (const device of devices) {
-        if (device.category === 'Актуатор' && typeof device.type === 'number' && !device.site && !device.siteId) {
-          const siteCounts = new Map(); // Подсчитываем частоту помещений связанных устройств
-          const channelConfig = getActuatorChannelCount(device.type);
-          
-          if (channelConfig) {
-            const channelTypes = channelConfig.types;
-            const channelCount = channelConfig.count;
-            
-            // Определяем количество каналов каждого типа для смешанных устройств
-            let doCount = 0, dimCount = 0, aoCount = 0;
-            if (channelTypes.includes('do') && channelTypes.includes('dim')) {
-              switch (device.type) {
-                case 0x41: doCount = 6; dimCount = 6; break;
-                case 0xaa: doCount = 2; dimCount = 2; break;
-                case 0xab: case 0xac: doCount = 1; dimCount = 1; break;
-                case 0xb5: doCount = 6; dimCount = 12; break;
-              }
-            } else {
-              if (channelTypes.includes('do')) doCount = channelCount;
-              if (channelTypes.includes('dim')) dimCount = channelCount;
-              if (channelTypes.includes('ao')) aoCount = channelCount;
-            }
-            
-            // Проверяем каналы через deviceDataMap (данные из WebSocket)
-            for (let i = 1; i <= doCount; i++) {
-              const channelId = `${device.id}/do/${i}`;
-              const channelPayload = deviceDataMap.get(channelId);
-              if (channelPayload && channelPayload.bind) {
-                const linkedDevice = devices.find(d => d.id === channelPayload.bind);
-                if (linkedDevice && linkedDevice.site) {
-                  const count = siteCounts.get(linkedDevice.site) || 0;
-                  siteCounts.set(linkedDevice.site, count + 1);
-                }
-              }
-            }
-            
-            for (let i = 1; i <= dimCount; i++) {
-              const channelId = `${device.id}/dim/${i}`;
-              const channelPayload = deviceDataMap.get(channelId);
-              if (channelPayload && channelPayload.bind) {
-                const linkedDevice = devices.find(d => d.id === channelPayload.bind);
-                if (linkedDevice && linkedDevice.site) {
-                  const count = siteCounts.get(linkedDevice.site) || 0;
-                  siteCounts.set(linkedDevice.site, count + 1);
-                }
-              }
-            }
-            
-            for (let i = 1; i <= aoCount; i++) {
-              const channelId = `${device.id}/ao/${i}`;
-              const channelPayload = deviceDataMap.get(channelId);
-              if (channelPayload && channelPayload.bind) {
-                const linkedDevice = devices.find(d => d.id === channelPayload.bind);
-                if (linkedDevice && linkedDevice.site) {
-                  const count = siteCounts.get(linkedDevice.site) || 0;
-                  siteCounts.set(linkedDevice.site, count + 1);
-                }
-              }
-            }
-          }
-          
-          // Выбираем помещение с наибольшей частотой
-          if (siteCounts.size > 0) {
-            let maxCount = 0;
-            let mostCommonSite = null;
-            for (const [siteName, count] of siteCounts.entries()) {
-              if (count > maxCount) {
-                maxCount = count;
-                mostCommonSite = siteName;
-              }
-            }
-            
-            if (mostCommonSite) {
-              const site = sites.find(s => s.name === mostCommonSite);
-              if (site) {
-                device.siteId = site.id;
-                device.site = mostCommonSite;
-              }
-            }
-          }
-        }
-      }
+      // Статистический резолв site для актуаторов убран
+      // Зачем: Для актуаторов site должен браться только из WebSocket (payload.site или state.site)
+      // Это обеспечивает приоритет данных из WebSocket над статистическим резолвом
       
       console.log(`[DEBUG] Обработка завершена. Устройств: ${devices.length}, Помещений: ${sites.length}`);
       console.log(`[DEBUG] Закрываем WebSocket соединение`);
@@ -5204,20 +5126,22 @@ class TerminalKitStatusDisplay {
     const deviceType = payload.type;
     let device = null;
     
-    // Обрабатываем устройства с числовым типом
-    if (typeof deviceType === 'number' && deviceType !== 0x00) {
-      let siteId = payload.site;
-      let siteName = null;
-      
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
+      // Обрабатываем устройства с числовым типом
+      if (typeof deviceType === 'number' && deviceType !== 0x00) {
+        // Для актуаторов site берется из WebSocket (payload.site или state.site)
+        // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
+        let siteId = payload.site || (payload.state && payload.state.site);
+        let siteName = null;
+        
+        if (siteId) {
+          if (Array.isArray(siteId)) {
+            siteId = siteId[0];
+          }
+          if (typeof siteId === 'string') {
+            const site = this.sites.find(s => s.id === siteId);
+            siteName = site ? site.name : null;
+          }
         }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
-        }
-      }
       
       const category = getDeviceCategory(deviceType);
       const deviceName = getDeviceName(payload);
@@ -5355,18 +5279,9 @@ class TerminalKitStatusDisplay {
           );
           
           if (linkedChannels.length > 0) {
-            // Если актуатор не имеет помещения, но его канал связан с устройством с помещением,
-            // устанавливаем помещение актуатора
-            if (device.site && (!actuator.site || !actuator.siteId)) {
-              actuator.siteId = device.siteId;
-              actuator.site = device.site;
-              
-              // Обновляем видимый список, если актуатор видим
-              const actuatorIndex = this.devices.findIndex(d => d.id === actuator.id);
-              if (actuatorIndex >= 0) {
-                this.devices[actuatorIndex] = actuator;
-              }
-            }
+            // Для актуаторов site берется только из WebSocket, не из связанных устройств
+            // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
+            // Убрана автоматическая установка site из связанного устройства
             
             // Инвалидируем кэш информации об актуаторе, чтобы обновить список каналов с новым linkedDevice
             this.cache.deviceInfoByDeviceId.delete(actuator.id);
