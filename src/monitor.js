@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.7 (ручное управление версией)
+ * Версия: 1.0.13 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.11';
+const VERSION = '1.0.13';
 
 const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
@@ -2574,8 +2574,8 @@ class TerminalKitStatusDisplay {
     const height = this.height - 3; // Высота минус заголовок и статистика
     
     // Рисуем рамку вокруг панели таблицы с количеством устройств (каждый раз для обновления индикатора)
-    const deviceCount = this.devices.length;
-    const tableTitle = `Список устройств (${deviceCount})`;
+      const deviceCount = this.devices.length;
+      const tableTitle = `Список устройств (${deviceCount})`;
     const scrollInfo = {
       current: this.tableScroll,
       visible: this.tableVisibleRows,
@@ -2680,7 +2680,7 @@ class TerminalKitStatusDisplay {
     const height = this.height - 3; // Высота минус заголовок и статистика
     
     // Рисуем рамку вокруг панели параметров (каждый раз для обновления индикатора скроллинга)
-    const label = 'Устройство (c - копировать)';
+      const label = 'Устройство (c - копировать)';
     
     // Вычисляем информацию о скроллинге для индикатора
     let scrollInfo = null;
@@ -3061,8 +3061,8 @@ class TerminalKitStatusDisplay {
       const channelState = channelData?.state || null;
       
       let linkedDevice = null;
+      // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
       if (channelState && channelState.bind) {
-        // bind в канале актуатора содержит ID потребителя (UUID)
         linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
         // Если не найдено по ID, пробуем найти по коду или имени
         if (!linkedDevice && typeof channelState.bind === 'string') {
@@ -3078,6 +3078,16 @@ class TerminalKitStatusDisplay {
           this.requestMissingDevice(channelState.bind);
         }
       }
+      
+      // Метод 2: обратная привязка - ищем устройства, у которых bind указывает на этот канал
+      // Зачем: Привязка может храниться в обратном направлении - у потребителя есть bind с путем к каналу
+      if (!linkedDevice) {
+        linkedDevice = this.allDevices.find(d => {
+          const deviceBind = d.bind || (this.deviceStates.get(d.id)?.state?.bind);
+          return deviceBind === channelId;
+        });
+      }
+      
       channels.push({ channelId, channelType: 'do', channelIndex: i, channelState, linkedDevice });
     }
     
@@ -3086,8 +3096,8 @@ class TerminalKitStatusDisplay {
       const channelData = this.deviceStates.get(channelId);
       const channelState = channelData?.state || null;
       let linkedDevice = null;
+      // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
       if (channelState && channelState.bind) {
-        // bind в канале актуатора содержит ID потребителя (UUID)
         linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
         // Если не найдено по ID, пробуем найти по коду или имени
         if (!linkedDevice && typeof channelState.bind === 'string') {
@@ -3103,6 +3113,16 @@ class TerminalKitStatusDisplay {
           this.requestMissingDevice(channelState.bind);
         }
       }
+      
+      // Метод 2: обратная привязка - ищем устройства, у которых bind указывает на этот канал
+      // Зачем: Привязка может храниться в обратном направлении - у потребителя есть bind с путем к каналу
+      if (!linkedDevice) {
+        linkedDevice = this.allDevices.find(d => {
+          const deviceBind = d.bind || (this.deviceStates.get(d.id)?.state?.bind);
+          return deviceBind === channelId;
+        });
+      }
+      
       channels.push({ channelId, channelType: 'dim', channelIndex: i, channelState, linkedDevice });
     }
     
@@ -3111,8 +3131,8 @@ class TerminalKitStatusDisplay {
       const channelData = this.deviceStates.get(channelId);
       const channelState = channelData?.state || null;
       let linkedDevice = null;
+      // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
       if (channelState && channelState.bind) {
-        // bind в канале актуатора содержит ID потребителя (UUID)
         linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
         // Если не найдено по ID, пробуем найти по коду или имени
         if (!linkedDevice && typeof channelState.bind === 'string') {
@@ -3128,6 +3148,16 @@ class TerminalKitStatusDisplay {
           this.requestMissingDevice(channelState.bind);
         }
       }
+      
+      // Метод 2: обратная привязка - ищем устройства, у которых bind указывает на этот канал
+      // Зачем: Привязка может храниться в обратном направлении - у потребителя есть bind с путем к каналу
+      if (!linkedDevice) {
+        linkedDevice = this.allDevices.find(d => {
+          const deviceBind = d.bind || (this.deviceStates.get(d.id)?.state?.bind);
+          return deviceBind === channelId;
+        });
+      }
+      
       channels.push({ channelId, channelType: 'ao', channelIndex: i, channelState, linkedDevice });
     }
     
