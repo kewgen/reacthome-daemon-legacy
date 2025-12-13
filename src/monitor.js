@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.36 (ручное управление версией)
+ * Версия: 1.0.37 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.36';
+const VERSION = '1.0.37';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -4104,7 +4104,11 @@ class TerminalKitStatusDisplay {
         info.push(`  Канал: ${channelTypeName}/${binding.channelIndex}`);
         if (binding.channelState) {
           const channelValue = binding.channelState.value !== undefined ? binding.channelState.value : '—';
-          info.push(`  Состояние канала: ${channelValue}`);
+          // Добавляем маркер для зелёного цвета, если значение > 0
+          // Зачем: Визуально выделяем активное состояние канала зелёным цветом
+          const isChannelActive = typeof channelValue === 'number' && channelValue > 0;
+          const valueMarker = isChannelActive ? '__GREEN_VALUE__' : '';
+          info.push(`  Состояние канала: ${valueMarker}${channelValue}`);
           
           // Дополнительная информация для DIM каналов (LED подсветка)
           // Зачем: Для LED устройств важно показывать яркость в процентах и состояние включено/выключено
@@ -4176,7 +4180,11 @@ class TerminalKitStatusDisplay {
           
           if (channelState) {
             const channelValue = channelState.value !== undefined ? channelState.value : '—';
-            info.push(`  Состояние канала: ${channelValue}`);
+            // Добавляем маркер для зелёного цвета, если значение > 0
+            // Зачем: Визуально выделяем активное состояние канала зелёным цветом
+            const isChannelActive = typeof channelValue === 'number' && channelValue > 0;
+            const valueMarker = isChannelActive ? '__GREEN_VALUE__' : '';
+            info.push(`  Состояние канала: ${valueMarker}${channelValue}`);
           } else {
             info.push(`  Состояние канала: — (данные не получены)`);
           }
