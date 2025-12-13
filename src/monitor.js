@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.30 (ручное управление версией)
+ * Версия: 1.0.31 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.30';
+const VERSION = '1.0.31';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -917,6 +917,7 @@ const CONSUMER_TYPES = [
   'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP', // Добавляем 'fan' (строчными) для совместимости с устройствами типа 'fan'
   'curtains', 'curtain', 'blind', 'blinds', 'roller', // Шторы, жалюзи, роллеты - потребители
   'multiroom', // Мультирум аудио - потребитель
+  'NOVA', // Приточная вентиляция - перенесена из интеграций
 ];
 
 // Типы сенсоров (строковые)
@@ -932,7 +933,6 @@ const SENSOR_STRING_TYPES = [
 const INTEGRATION_TYPES = [
   'INTESIS_BOX', // Intesis AC контроллеры (интеграция с кондиционерами)
   'MODBUS', // Modbus устройства (протокол связи)
-  'NOVA', // Приточная вентиляция
 ];
 
 // Типы ACTION_* которые являются действиями в скриптах, а не устройствами
@@ -987,7 +987,7 @@ function getDeviceIcon(deviceType, category) {
       'reed': '🚪', // Геркон - сенсор открытия двери/окна
       'INTESIS_BOX': '❄️', // Intesis AC контроллер - интеграция с кондиционером
       'MODBUS': '🔌', // Modbus устройство - протокол интеграции
-      'NOVA': '🌬️', // Приточная вентиляция - интеграция
+      'NOVA': '🌬️', // Приточная вентиляция - потребитель
     };
     return consumerIconMap[deviceType] || '';
   }
@@ -1464,7 +1464,7 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
           const consumerArrays = ['light_220', 'light_LED', 'light_RGB', 'light_led', 
                                   'socket_220', 'valve_heating', 'valve_water', 
                                   'warm_floor', 'AC', 'FAN', 'BOILER', 'PUMP',
-                                  'thermostat', 'hygrostat', 'co2_stat']; // Термостаты остаются в массивах помещений, но категория изменена на Сенсор
+                                  'thermostat', 'hygrostat', 'co2_stat', 'NOVA']; // Термостаты остаются в массивах помещений, но категория изменена на Сенсор; NOVA - потребитель
           consumerArrays.forEach(arrayName => {
             if (payload[arrayName] && Array.isArray(payload[arrayName])) {
               payload[arrayName].forEach(consumerId => {
@@ -4167,7 +4167,7 @@ class TerminalKitStatusDisplay {
     }
     
     // Резолвинг параметров для устройств NOVA (приточная вентиляция)
-    // Зачем: NOVA устройства имеют специфичные параметры (режим, состояние, скорость вентилятора, уставка), которые нужно резолвить в читаемый вид
+    // Зачем: NOVA устройства являются потребителями и имеют специфичные параметры (режим, состояние, скорость вентилятора, уставка), которые нужно резолвить в читаемый вид
     const isNova = device.type === 'NOVA' || device.type === 'nova';
     if (isNova && state) {
       info.push('');
