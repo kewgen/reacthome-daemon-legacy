@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.24 (ручное управление версией)
+ * Версия: 1.0.25 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.24';
+const VERSION = '1.0.25';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -717,8 +717,14 @@ const checkForRemoteUpdateAndMaybeApply = async () => {
   const cmp = compareSemver(remoteVersion, VERSION);
   if (cmp <= 0) {
     if (isCheckUpdateOnlyMode()) {
-      console.log(`[INFO] Обновлений нет. Локальная версия: v${VERSION}`);
+      console.log(`[INFO] Обновлений нет. Локальная версия: v${VERSION}, удалённая: v${remoteVersion}`);
       process.exit(0);
+    }
+    // Зачем: Показываем, что проверка выполнена, даже если обновлений нет
+    if (cmp < 0) {
+      console.log(`[INFO] ✓ Локальная версия v${VERSION} новее удалённой v${remoteVersion} - обновление не требуется`);
+    } else {
+      console.log(`[INFO] ✓ Версия v${VERSION} актуальна (удалённая: v${remoteVersion})`);
     }
     return { checked: true, updateAvailable: false, remoteVersion };
   }
@@ -5268,6 +5274,7 @@ async function main() {
     initGlobalWsLogStreams();
 
     // Зачем: Перед подключением к WebSocket проверяем, нет ли более свежей версии монитора
+    console.log('[INFO] Проверка обновлений монитора...');
     await checkForRemoteUpdateAndMaybeApply();
     
     // Загружаем устройства и помещения полностью через WebSocket
