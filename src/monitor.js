@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.18 (ручное управление версией)
+ * Версия: 1.0.19 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.18';
+const VERSION = '1.0.19';
 
 const WS_URI = process.env.REACTHOME_WS_URI || 'ws://localhost:3000'; // По умолчанию подключаемся к локальному WebSocket серверу
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
@@ -3869,6 +3869,67 @@ class TerminalKitStatusDisplay {
       info.push('');
       info.push(`Связь с актуатором:`);
       info.push(`  ⚠️  Не привязан к актуатору (bind отсутствует)`);
+    }
+    
+    // Связь сенсора с модулем (для герконов, датчиков протечки и других сенсоров)
+    // Зачем: Сенсоры могут быть привязаны к модулям (например, M1) через DI каналы
+    const isSensor = device.category === 'Сенсор';
+    const sensorBindValue = (state && state.bind) || device.bind;
+    
+    if (isSensor && sensorBindValue) {
+      // Проверяем, является ли bind привязкой к модулю (формат: {moduleId}/di/{номер})
+      const bindParts = sensorBindValue.split('/');
+      if (bindParts.length >= 3 && bindParts[1] === 'di') {
+        const moduleId = bindParts[0];
+        const channelType = bindParts[1];
+        const channelIndex = bindParts[2];
+        
+        info.push('');
+        info.push(`Связь с модулем:`);
+        info.push(`  Bind: ${sensorBindValue}`);
+        
+        // Ищем модуль
+        let module = this.devicesByMac.get(moduleId);
+        if (!module) {
+          module = this.allDevices.find(d => d.id === moduleId);
+          if (module) this.devicesByMac.set(moduleId, module);
+        }
+        
+        if (module) {
+          const moduleName = module.code || module.title || module.name || moduleId;
+          info.push(`  Модуль: ${moduleName}`);
+          if (module.type) {
+            info.push(`  Тип модуля: ${DEVICE_TYPE_NAMES[module.type] || `Тип${module.type}`} (${module.type})`);
+          }
+          const channelTypeName = channelType === 'di' ? 'DI' : channelType.toUpperCase();
+          info.push(`  Канал: ${channelTypeName}/${channelIndex}`);
+          
+          // Получаем состояние канала модуля
+          const channelId = sensorBindValue;
+          const channelData = this.deviceStates.get(channelId);
+          const channelState = channelData?.state || null;
+          
+          if (channelState) {
+            const channelValue = channelState.value !== undefined ? channelState.value : '—';
+            info.push(`  Состояние канала: ${channelValue}`);
+          } else {
+            info.push(`  Состояние канала: — (данные не получены)`);
+          }
+          
+          // Показываем помещение модуля, если есть
+          if (module.site) {
+            info.push(`  Помещение модуля: ${module.site}`);
+          }
+        } else {
+          info.push(`  ⚠️  Модуль не найден (ID: ${moduleId})`);
+        }
+      } else {
+        // Bind не является привязкой к модулю через DI канал
+        info.push('');
+        info.push(`Связь с модулем:`);
+        info.push(`  Bind: ${sensorBindValue}`);
+        info.push(`  ⚠️  Формат bind не соответствует привязке к модулю (ожидается: {moduleId}/di/{номер})`);
+      }
     }
     
     // Каналы актуатора (включая MIX устройства: MIX_H, MIX_1, MIX_2, MIX_1_RS, MIX_6x12_RS)
