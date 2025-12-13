@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.34 (ручное управление версией)
+ * Версия: 1.0.35 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -61,7 +61,7 @@
  * • Tab          - Переключение между панелями (фильтры ↔ таблица ↔ параметры)
  * • ←/→          - Переход между панелями (фильтры ↔ таблица ↔ параметры)
  * • ↑/↓ или j/k  - Навигация по списку / Скроллинг текста (в панели параметров)
- * • Enter/Space  - Применить/снять фильтр (toggle) / Просмотр устройства
+ * • Enter/Space  - Применить/снять фильтр (toggle) / Обновить состояние устройства
  * • PgUp/PgDown  - Постраничная прокрутка (таблица и параметры)
  * • Home/End     - К началу/концу списка (таблица и параметры)
  * • c            - Копировать раздел "Устройство" в буфер обмена
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.34';
+const VERSION = '1.0.35';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -2116,6 +2116,12 @@ class TerminalKitStatusDisplay {
         // Сбрасываем скроллинг панели параметров при смене устройства
         this.deviceInfoScroll = 0;
         this.render();
+      } else if (name === 'ENTER' || name === 'SPACE' || name === ' ') {
+        // Запрос на обновление состояния выбранного устройства
+        if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length) {
+          const device = this.devices[this.selectedIndex];
+          this.requestDeviceStateUpdate(device.id);
+        }
       }
     } else if (this.activePanel === 2) {
       // Навигация в панели параметров (скроллинг текста)
@@ -2156,6 +2162,12 @@ class TerminalKitStatusDisplay {
         this.beginNavigation();
         this.deviceInfoScroll = maxScroll;
         this.render();
+      } else if (name === 'ENTER' || name === 'SPACE' || name === ' ') {
+        // Запрос на обновление состояния выбранного устройства
+        if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length) {
+          const device = this.devices[this.selectedIndex];
+          this.requestDeviceStateUpdate(device.id);
+        }
       }
     }
   }
@@ -5051,6 +5063,25 @@ class TerminalKitStatusDisplay {
       this.logWebSocketRequest('get', [deviceId], this.ws);
       this.ws.send(JSON.stringify(getRequest));
     }
+  }
+  
+  // Запрос на обновление состояния существующего устройства
+  // Зачем: позволяет пользователю вручную обновить состояние устройства по требованию
+  requestDeviceStateUpdate(deviceId) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return;
+    }
+    
+    // Проверяем, что устройство существует
+    const device = this.allDevices.find(d => d.id === deviceId);
+    if (!device) {
+      return;
+    }
+    
+    // Отправляем GET запрос для обновления состояния устройства
+    const getRequest = { type: 'get', state: [deviceId] };
+    this.logWebSocketRequest('get', [deviceId], this.ws);
+    this.ws.send(JSON.stringify(getRequest));
   }
   
   // Пакетный запрос связанных устройств из bind каналов всех актуаторов (логика из resolve-actuator-via-websocket.js)
