@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.31';
+const VERSION = '1.0.32';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -4230,6 +4230,98 @@ class TerminalKitStatusDisplay {
         };
         const valueName = valueNames[value] !== undefined ? valueNames[value] : value;
         info.push(`  Значение: ${valueName} (${value})`);
+      }
+    }
+    
+    // Резолвинг подключенных устройств для MODBUS (протокол связи)
+    // Зачем: MODBUS устройства используются как шлюзы для связи с другими устройствами через протокол Modbus
+    // Нужно показывать, какие устройства подключены к этому MODBUS устройству
+    const isModbus = device.type === 'MODBUS' || device.type === 'modbus';
+    if (isModbus) {
+      info.push('');
+      info.push(`🔌 Подключенные устройства Modbus:`);
+      
+      // Ищем все устройства, у которых bind указывает на это MODBUS устройство
+      // Формат bind: {modbusId}/MODBUS/{address} или {modbusId}/modbus/{address}
+      const connectedDevices = [];
+      
+      this.allDevices.forEach(connectedDevice => {
+        const deviceBind = connectedDevice.bind || (this.deviceStates.get(connectedDevice.id)?.state?.bind);
+        if (deviceBind) {
+          const bindParts = deviceBind.split('/');
+          if (bindParts.length >= 3) {
+            const [modbusId, bindType, address] = bindParts;
+            // Проверяем, что bind указывает на это MODBUS устройство
+            if (modbusId === device.id && 
+                (bindType === 'MODBUS' || bindType === 'modbus' || bindType === 'MODBUS_TCP' || bindType === 'modbus_tcp')) {
+              connectedDevices.push({
+                device: connectedDevice,
+                address: address,
+                bindType: bindType
+              });
+            }
+          }
+        }
+      });
+      
+      if (connectedDevices.length > 0) {
+        info.push(`  Всего устройств: ${connectedDevices.length}`);
+        info.push('');
+        
+        // Сортируем по адресу
+        connectedDevices.sort((a, b) => {
+          const addrA = parseInt(a.address, 10) || 0;
+          const addrB = parseInt(b.address, 10) || 0;
+          return addrA - addrB;
+        });
+        
+        connectedDevices.forEach(({ device: connectedDevice, address, bindType }) => {
+          const deviceName = connectedDevice.code || connectedDevice.title || connectedDevice.name || connectedDevice.id.substring(0, 8) + '...';
+          const deviceType = connectedDevice.typeName || connectedDevice.type;
+          const deviceSite = connectedDevice.site || '—';
+          
+          info.push(`  Адрес ${address}: ${deviceName} (${deviceType})`);
+          if (deviceSite !== '—') {
+            info.push(`    Помещение: ${deviceSite}`);
+          }
+          
+          // Показываем состояние устройства, если есть
+          const connectedDeviceData = this.deviceStates.get(connectedDevice.id);
+          const connectedDeviceState = connectedDeviceData?.state;
+          if (connectedDeviceState) {
+            const online = connectedDeviceState.online;
+            const ready = connectedDeviceState.ready;
+            const value = connectedDeviceState.value;
+            
+            if (online !== undefined || ready !== undefined) {
+              const statusParts = [];
+              if (online !== undefined) {
+                statusParts.push(online ? '🟢 Online' : '🔴 Offline');
+              }
+              if (ready !== undefined) {
+                statusParts.push(ready ? '✅ Ready' : '⚠️ Not Ready');
+              }
+              if (statusParts.length > 0) {
+                info.push(`    Статус: ${statusParts.join(', ')}`);
+              }
+            }
+            
+            if (value !== undefined && value !== null) {
+              info.push(`    Значение: ${value}`);
+            }
+          }
+          info.push('');
+        });
+      } else {
+        info.push(`  ⚠️  Нет подключенных устройств`);
+        info.push(`     Устройства подключаются через bind в формате: {modbusId}/MODBUS/{address}`);
+      }
+      
+      // Показываем IP адрес MODBUS устройства, если есть
+      if (state && state.ip) {
+        info.push(`  IP адрес: ${state.ip}`);
+      } else if (device.ip) {
+        info.push(`  IP адрес: ${device.ip}`);
       }
     }
     
