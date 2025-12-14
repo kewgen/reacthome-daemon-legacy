@@ -528,7 +528,9 @@ const getDeviceFields = (id) => {
     type: obj.type !== undefined ? obj.type : null,
     parent: obj.parent !== undefined ? obj.parent : null,
     site: obj.site !== undefined ? obj.site : null,
-    project: obj.project !== undefined ? obj.project : null
+    project: obj.project !== undefined ? obj.project : null,
+    // Зачем: связывание channel <-> endDevice по bind для корректного trace_id
+    bind: obj.bind !== undefined ? obj.bind : null
   };
 };
 
@@ -1068,6 +1070,9 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
   if (scripts.length === 0) return;
 
   const visitedSet = visited instanceof Set ? visited : new Set();
+  // Зачем: если источник уже имеет trace_id, но скрипт в кэше с другим trace_id,
+  // это новый независимый запуск (иначе "инициатор" не попадёт в цепочку).
+  const inheritedTraceId = traceIdCache.get(deviceId);
   
   for (const scriptId of scripts) {
     // Зачем: защита от циклов в графе скриптов (A -> B -> A)
@@ -1082,7 +1087,15 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
     // Условие: НОВЫЙ ЗАПУСК скрипта
     const isNewExecution = 
       !cached ||                                    // Скрипт не в кэше
-      timeSinceLastChange > SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC;  // Прошло > 10 секунд
+      timeSinceLastChange > SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC || // Прошло > 10 секунд
+      // Зачем: при подъёме по графу (script->script) источник уже может иметь trace_id цепочки,
+      // а cached.trace_id может быть от другой цепочки — тогда нужно "переоткрыть" запуск.
+      (typeof inheritedTraceId === 'string' &&
+        inheritedTraceId.length > 0 &&
+        cached &&
+        typeof cached.trace_id === 'string' &&
+        cached.trace_id.length > 0 &&
+        cached.trace_id !== inheritedTraceId);
     
     if (isNewExecution) {
       // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
@@ -1241,11 +1254,31 @@ const analyzeDeviceContext = (id, timestamp, param) => {
 // Зачем: построение трассировки без _context от демона через анализ контекста из БД
 const generateTraceId = (id, context, param) => {
   const now = Date.now();
+
+  // Зачем: каналы (MAC/do|dim/x) и "обёртки" устройств (UUID с bind=канал) должны иметь один trace_id.
+  // Иначе цепочка рвётся: script -> UUID-device имеет trace_id, а channel-change получает новый trace_id.
+  const bindFields = getDeviceFields(id);
+  const bindId = bindFields && typeof bindFields.bind === 'string' ? bindFields.bind : null;
+  if (bindId && traceIdCache.has(bindId)) {
+    const linkedTraceId = traceIdCache.get(bindId);
+    traceIdCache.set(id, linkedTraceId);
+    recentEventsCache.set(id, { timestamp: now, trace_id: linkedTraceId, type: context?.type || 'unknown' });
+    return linkedTraceId;
+  }
+  // Если это канал, который ссылается bind-ом на endDevice (UUID), то тоже подхватываем trace_id endDevice.
+  if (isChannelId(id) && bindId && traceIdCache.has(bindId)) {
+    const linkedTraceId = traceIdCache.get(bindId);
+    traceIdCache.set(id, linkedTraceId);
+    recentEventsCache.set(id, { timestamp: now, trace_id: linkedTraceId, type: context?.type || 'unknown' });
+    return linkedTraceId;
+  }
   
   // Если в контексте уже есть trace_id - используем его и сохраняем в кэш
   if (context && context.trace_id) {
     traceIdCache.set(id, context.trace_id);
     recentEventsCache.set(id, { timestamp: now, trace_id: context.trace_id, type: context.type });
+    // Зачем: прокидываем trace_id на bind-канал/обёртку, если связь есть
+    if (bindId) traceIdCache.set(bindId, context.trace_id);
     return context.trace_id;
   }
   
@@ -1254,6 +1287,7 @@ const generateTraceId = (id, context, param) => {
   if (scriptCacheEntry) {
     const cachedTraceId = traceIdCache.get(id);
     if (cachedTraceId) {
+      if (bindId) traceIdCache.set(bindId, cachedTraceId);
       return cachedTraceId; // Используем trace_id из кэша скрипта
     }
   }
@@ -1263,6 +1297,7 @@ const generateTraceId = (id, context, param) => {
     if (cached.targetDevices && cached.targetDevices.has(id)) {
       const cachedTraceId = cached.trace_id;
       traceIdCache.set(id, cachedTraceId);
+      if (bindId) traceIdCache.set(bindId, cachedTraceId);
       return cachedTraceId; // Используем trace_id скрипта
     }
   }
@@ -1300,6 +1335,7 @@ const generateTraceId = (id, context, param) => {
     for (const deviceId of dbContext.targetDevices) {
       traceIdCache.set(deviceId, traceIdToUse);
     }
+    if (bindId) traceIdCache.set(bindId, traceIdToUse);
     
     recentEventsCache.set(id, { timestamp: now, trace_id: traceIdToUse, type: 'script' });
     
@@ -1330,6 +1366,7 @@ const generateTraceId = (id, context, param) => {
     const traceId = traceIdCache.get(triggerRef);
     traceIdCache.set(id, traceId);
       recentEventsCache.set(id, { timestamp: now, trace_id: traceId, type: triggerType });
+    if (bindId) traceIdCache.set(bindId, traceId);
     return traceId;
   }
   
@@ -1338,6 +1375,7 @@ const generateTraceId = (id, context, param) => {
   traceIdCache.set(id, newTraceId);
     traceIdCache.set(triggerRef, newTraceId); // Сохраняем для trigger.ref
     recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: triggerType });
+    if (bindId) traceIdCache.set(bindId, newTraceId);
     return newTraceId;
   }
   
@@ -1357,6 +1395,19 @@ const generateTraceId = (id, context, param) => {
         if (device.parent === recentId || recentDevice.parent === id) {
           traceIdCache.set(id, recentEvent.trace_id);
           recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+          if (bindId) traceIdCache.set(bindId, recentEvent.trace_id);
+          return recentEvent.trace_id;
+        }
+
+        // Связь через bind (обёртка <-> канал)
+        if (
+          (device.bind && device.bind === recentId) ||
+          (recentDevice.bind && recentDevice.bind === id) ||
+          (device.bind && recentDevice.bind && device.bind === recentDevice.bind)
+        ) {
+          traceIdCache.set(id, recentEvent.trace_id);
+          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+          if (bindId) traceIdCache.set(bindId, recentEvent.trace_id);
           return recentEvent.trace_id;
         }
         
@@ -1368,6 +1419,7 @@ const generateTraceId = (id, context, param) => {
           if (hasSameSite && timeDiff <= 500) { // Для site более строгое окно - 500ms
             traceIdCache.set(id, recentEvent.trace_id);
             recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+            if (bindId) traceIdCache.set(bindId, recentEvent.trace_id);
             return recentEvent.trace_id;
           }
         }
@@ -1380,6 +1432,7 @@ const generateTraceId = (id, context, param) => {
   if (traceIdCache.has(id)) {
     const existingTraceId = traceIdCache.get(id);
     recentEventsCache.set(id, { timestamp: now, trace_id: existingTraceId, type: 'unknown' });
+    if (bindId) traceIdCache.set(bindId, existingTraceId);
     return existingTraceId;
   }
   
@@ -1387,6 +1440,7 @@ const generateTraceId = (id, context, param) => {
   const newTraceId = uuidv4();
   traceIdCache.set(id, newTraceId);
   recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: 'unknown' });
+  if (bindId) traceIdCache.set(bindId, newTraceId);
   
   return newTraceId;
 };
