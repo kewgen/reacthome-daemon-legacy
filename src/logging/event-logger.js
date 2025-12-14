@@ -115,6 +115,14 @@ if (process.env.OPENSEARCH_CA_CERT && process.env.OPENSEARCH_CA_CERT.startsWith(
 }
 
 const opensearch = require('./opensearch');
+// Зачем: opensearch.js может быть загружен до env-preload (через другие модули). Явно переинициализируем после загрузки env.
+if (opensearch && typeof opensearch.initFromEnv === 'function') {
+  try {
+    opensearch.initFromEnv();
+  } catch (e) {
+    // ignore
+  }
+}
 
 // ВАЖНО: ./event-log внутри делает require('./opensearch'), поэтому импортируем его только ПОСЛЕ env-preload.
 const {
@@ -1926,7 +1934,7 @@ const sendEvent = (event, wsMeta = null) => {
   // Проверяем доступность OpenSearch
   if (opensearch.isEnabled && opensearch.isEnabled()) {
     // Отправляем напрямую
-    opensearch.sendBatch([event])
+    opensearch.sendBatch([event], { enqueueOnFail: false })
       .then(() => {
         stats.os_ok += 1;
         stats.lastOsOkTs = Date.now();
@@ -2096,7 +2104,7 @@ const flushBuffer = async () => {
     eventBuffer = [];
     
     try {
-      await opensearch.sendBatch(eventsToSend);
+      await opensearch.sendBatch(eventsToSend, { enqueueOnFail: false });
       stats.os_ok += eventsToSend.length;
       stats.flushed += eventsToSend.length;
       stats.lastOsOkTs = Date.now();

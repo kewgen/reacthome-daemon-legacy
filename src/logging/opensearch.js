@@ -44,12 +44,26 @@ const osError = (message, ...args) => {
   console.error(message, ...args);
 };
 
-// Конфигурация OpenSearch
-const OPENSEARCH_ENABLED = process.env.OPENSEARCH_ENABLED === 'true';
-const OPENSEARCH_URL = process.env.OPENSEARCH_URL || '';
-const OPENSEARCH_USER = process.env.OPENSEARCH_USER || '';
-const OPENSEARCH_PASSWORD = process.env.OPENSEARCH_PASSWORD || '';
-const OPENSEARCH_INDEX_PREFIX = process.env.OPENSEARCH_INDEX_PREFIX || 'reacthome-events';
+// ==========================
+// Config (variant A)
+// ==========================
+// Зачем: раньше env читался один раз на require() → в интерактиве (env-preload) OpenSearch залипал как "выключен".
+// Теперь конфиг инициализируется явно через init()/initFromEnv() и может быть переинициализирован.
+let config = {
+  enabled: false,
+  url: '',
+  user: '',
+  password: '',
+  indexPrefix: 'reacthome-events',
+  caCert: path.join(os.homedir(), '.opensearch', 'root.crt'),
+  requestTimeoutMs: parseInt(process.env.OPENSEARCH_REQUEST_TIMEOUT_MS || '15000', 10), // Зачем: чтобы bulk не висел бесконечно
+  keepAlive: process.env.OPENSEARCH_KEEPALIVE !== 'false', // default true
+  maxSockets: parseInt(process.env.OPENSEARCH_MAX_SOCKETS || '25', 10), // Зачем: ограничиваем параллелизм, чтобы не ловить ETIMEDOUT
+  availabilityCheckMs: parseInt(process.env.OPENSEARCH_AVAILABILITY_CHECK_MS || '30000', 10) // Зачем: панель должна быстро отражать статус
+};
+
+const isEnabled = () => !!(config && config.enabled === true && config.url);
+
 // Расшифровка пути с ~ (если указан)
 const expandPath = (filePath) => {
   if (filePath && filePath.startsWith('~')) {
@@ -58,27 +72,51 @@ const expandPath = (filePath) => {
   return filePath;
 };
 
-const OPENSEARCH_CA_CERT = expandPath(process.env.OPENSEARCH_CA_CERT) || path.join(os.homedir(), '.opensearch', 'root.crt');
+const initFromEnv = () => {
+  const enabled = process.env.OPENSEARCH_ENABLED === 'true';
+  const url = process.env.OPENSEARCH_URL || '';
+  const user = process.env.OPENSEARCH_USER || '';
+  const password = process.env.OPENSEARCH_PASSWORD || '';
+  const indexPrefix = process.env.OPENSEARCH_INDEX_PREFIX || 'reacthome-events';
+  const caCert = expandPath(process.env.OPENSEARCH_CA_CERT) || path.join(os.homedir(), '.opensearch', 'root.crt');
+
+  init({
+    enabled,
+    url,
+    user,
+    password,
+    indexPrefix,
+    caCert
+  });
+};
 
 // HTTPS Agent с сертификатом
 let httpsAgent = null;
+let httpsAgentKey = null;
 const getHttpsAgent = () => {
   if (httpsAgent) return httpsAgent;
   
-  if (fs.existsSync(OPENSEARCH_CA_CERT)) {
-    const ca = fs.readFileSync(OPENSEARCH_CA_CERT);
+  const key = `${config.caCert}|${config.keepAlive ? 'ka1' : 'ka0'}|${config.maxSockets}`;
+  httpsAgentKey = key;
+
+  if (fs.existsSync(config.caCert)) {
+    const ca = fs.readFileSync(config.caCert);
     httpsAgent = new https.Agent({
       ca: ca,
-      rejectUnauthorized: true
+      rejectUnauthorized: true,
+      keepAlive: !!config.keepAlive,
+      maxSockets: Number.isFinite(config.maxSockets) ? config.maxSockets : 25
     });
-    osLog(`[opensearch] Используется CA сертификат: ${OPENSEARCH_CA_CERT}`);
+    osLog(`[opensearch] Используется CA сертификат: ${config.caCert}`);
   } else {
     // Если сертификат не найден, используем стандартный agent (для тестирования)
     // ⚠️ ВНИМАНИЕ: В продакшене должен быть установлен сертификат!
     httpsAgent = new https.Agent({
-      rejectUnauthorized: false // ⚠️ Только для разработки, в продакшене должен быть true
+      rejectUnauthorized: false, // ⚠️ Только для разработки, в продакшене должен быть true
+      keepAlive: !!config.keepAlive,
+      maxSockets: Number.isFinite(config.maxSockets) ? config.maxSockets : 25
     });
-    osWarn(`[opensearch] ⚠️ CA сертификат не найден: ${OPENSEARCH_CA_CERT}`);
+    osWarn(`[opensearch] ⚠️ CA сертификат не найден: ${config.caCert}`);
     osWarn(`[opensearch] ⚠️ Используется insecure режим (rejectUnauthorized=false)`);
     osWarn(`[opensearch] ⚠️ Для продакшена выполните: ./scripts/install_opensearch_cert.sh`);
   }
@@ -96,6 +134,73 @@ const BACKOFF_BASE = parseFloat(process.env.OPENSEARCH_BACKOFF_BASE || '2'); // 
 let opensearchFailedBatch = [];
 const OPENSEARCH_FAILED_BATCH_SIZE = 100;
 let isOpensearchAvailable = true;
+
+// Метрики (для панели/диагностики)
+const metrics = {
+  ok: 0,              // сколько документов успешно принято (включая 409 при create)
+  fail: 0,            // сколько документов не удалось отправить (запрос/батч)
+  dropped: 0,         // сколько документов отброшено из failedBatch overflow
+  failedBatch: 0,     // текущий размер failedBatch
+  lastOkTs: 0,
+  lastFailTs: 0,
+  lastError: null
+};
+
+let availabilityInterval = null;
+let lastInitSignature = null;
+let lastExternalRetryLogTs = 0; // Зачем: не спамим логами при внешнем ретрае (event-logger)
+
+const init = (nextConfig = {}) => {
+  // Зачем: допускаем переинициализацию после env-preload (TTY) или при смене настроек.
+  const next = {
+    ...config,
+    ...nextConfig
+  };
+  const signature = JSON.stringify({
+    enabled: next.enabled === true,
+    url: next.url || '',
+    user: next.user || '',
+    password: next.password ? 'set' : '',
+    indexPrefix: next.indexPrefix || '',
+    caCert: next.caCert || '',
+    requestTimeoutMs: next.requestTimeoutMs || 0,
+    keepAlive: next.keepAlive !== false,
+    maxSockets: next.maxSockets || 0,
+    availabilityCheckMs: next.availabilityCheckMs || 0
+  });
+
+  // Зачем: initFromEnv может вызываться несколько раз (auto-init + явный init после env-preload).
+  // Если конфиг не изменился — не пересоздаём интервалы и не спамим логами.
+  if (lastInitSignature === signature) {
+    config = next;
+    return;
+  }
+
+  lastInitSignature = signature;
+  config = next;
+
+  // Сбрасываем agent, если изменился ключ (CA / keepAlive / maxSockets)
+  const nextKey = `${config.caCert}|${config.keepAlive ? 'ka1' : 'ka0'}|${config.maxSockets}`;
+  if (httpsAgentKey !== nextKey) {
+    httpsAgent = null;
+    httpsAgentKey = null;
+  }
+
+  if (availabilityInterval) {
+    clearInterval(availabilityInterval);
+    availabilityInterval = null;
+  }
+
+  if (isEnabled()) {
+    getHttpsAgent();
+    // Быстрый healthcheck, чтобы панель не показывала устаревшее состояние
+    setTimeout(() => checkAvailability().catch(() => {}), 0);
+    availabilityInterval = setInterval(() => checkAvailability().catch(() => {}), Math.max(5000, config.availabilityCheckMs || 30000));
+    osLog(`[opensearch] OpenSearch интеграция включена: ${config.url}`);
+  } else {
+    osLog('[opensearch] OpenSearch интеграция отключена (OPENSEARCH_ENABLED=false или OPENSEARCH_URL не задан)');
+  }
+};
 
 // Состояние повторных попыток
 const retryState = {
@@ -183,20 +288,20 @@ const calculateBackoffDelay = (attemptNumber) => {
 // Формирование индекса по дате
 const getIndexName = (date) => {
   const dateStr = date ? new Date(date).toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-  return `${OPENSEARCH_INDEX_PREFIX}-${dateStr}`;
+  return `${config.indexPrefix}-${dateStr}`;
 };
 
 // Создание маппинга индекса (если не существует)
 const ensureIndexMapping = async (indexName) => {
-  if (!OPENSEARCH_ENABLED || !OPENSEARCH_URL) return;
+  if (!isEnabled()) return;
   
   try {
     // Проверяем существование индекса
-    const checkUrl = `${OPENSEARCH_URL}/${indexName}`;
+    const checkUrl = `${config.url}/${indexName}`;
     const checkResponse = await fetch(checkUrl, {
       method: 'HEAD',
       headers: {
-        'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+        'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
       },
       agent: getHttpsAgent()
     });
@@ -338,12 +443,12 @@ const ensureIndexMapping = async (indexName) => {
       
     if (checkResponse.status === 404) {
       // Создаём индекс с правильным маппингом
-      const createUrl = `${OPENSEARCH_URL}/${indexName}`;
+      const createUrl = `${config.url}/${indexName}`;
       const createResponse = await fetch(createUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+          'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
         },
         body: JSON.stringify(mapping),
         agent: getHttpsAgent()
@@ -364,12 +469,12 @@ const ensureIndexMapping = async (indexName) => {
       // Пробуем добавить trace_id
       try {
         const traceIdField = { properties: { trace_id: { type: 'keyword' } } };
-        const traceIdUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
+        const traceIdUrl = `${config.url}/${indexName}/_mapping`;
         const traceIdResponse = await fetch(traceIdUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+            'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
           },
           body: JSON.stringify(traceIdField),
           agent: getHttpsAgent()
@@ -396,12 +501,12 @@ const ensureIndexMapping = async (indexName) => {
             }
           }
         };
-        const parentDeviceUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
+        const parentDeviceUrl = `${config.url}/${indexName}/_mapping`;
         const parentDeviceResponse = await fetch(parentDeviceUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+            'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
           },
           body: JSON.stringify(parentDeviceField),
           agent: getHttpsAgent()
@@ -421,8 +526,12 @@ const ensureIndexMapping = async (indexName) => {
 };
 
 // Отправка батча в OpenSearch через Bulk API
-const sendBatch = async (events, retryAttempt = 0) => {
-  if (!OPENSEARCH_ENABLED || !OPENSEARCH_URL || events.length === 0) return;
+const sendBatch = async (events, retryAttemptOrOptions = 0, maybeOptions = {}) => {
+  const retryAttempt = typeof retryAttemptOrOptions === 'number' ? retryAttemptOrOptions : 0;
+  const options = typeof retryAttemptOrOptions === 'number' ? (maybeOptions || {}) : (retryAttemptOrOptions || {});
+  const enqueueOnFail = options.enqueueOnFail !== false; // default true
+
+  if (!isEnabled() || events.length === 0) return;
   
   // Если превышено максимальное количество попыток
   if (retryAttempt >= BACKOFF_MAX_ATTEMPTS) {
@@ -473,7 +582,8 @@ const sendBatch = async (events, retryAttempt = 0) => {
     for (const event of dateEvents) {
       // Action line
       bulkBody += JSON.stringify({
-        index: {
+        // Зачем: create + уникальный _id → дедупликация. 409 считаем успехом.
+        create: {
           _index: indexName,
           _id: `${event.id}_${event.timestamp}_${event.param}` // Уникальный ID для дедупликации
         }
@@ -483,16 +593,20 @@ const sendBatch = async (events, retryAttempt = 0) => {
     }
     
     try {
-      const bulkUrl = `${OPENSEARCH_URL}/_bulk`;
+      const bulkUrl = `${config.url}/_bulk`;
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), Math.max(1000, config.requestTimeoutMs || 15000));
       const response = await fetch(bulkUrl, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/x-ndjson',
-          'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+          'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
         },
         body: bulkBody,
-        agent: getHttpsAgent()
+        agent: getHttpsAgent(),
+        signal: controller.signal
       });
+      clearTimeout(timeoutId);
       
       if (!response.ok) {
         const errorText = await response.text();
@@ -504,12 +618,31 @@ const sendBatch = async (events, retryAttempt = 0) => {
       const result = await response.json();
       
       // Проверяем ошибки в ответе
-      if (result.errors) {
-        const errors = result.items.filter(item => item.index && item.index.error);
-        if (errors.length > 0) {
-          osError(`[opensearch] Ошибки при индексации ${errors.length} событий:`, 
-            errors.slice(0, 3).map(e => e.index.error.reason));
+      if (result && Array.isArray(result.items)) {
+        let okDocs = 0;
+        let failDocs = 0;
+        const firstReasons = [];
+        for (const it of result.items) {
+          const action = it.create || it.index || it.update || it.delete;
+          const status = action && action.status ? action.status : 0;
+          if (status >= 200 && status < 300) {
+            okDocs += 1;
+          } else if (status === 409) {
+            // Зачем: conflict при create означает дубль → считаем как ok для метрик.
+            okDocs += 1;
+          } else {
+            failDocs += 1;
+            const reason = action && action.error && action.error.reason ? action.error.reason : null;
+            if (reason && firstReasons.length < 3) firstReasons.push(reason);
+          }
         }
+        if (failDocs > 0) {
+          osError(`[opensearch] Ошибки при индексации ${failDocs} событий:`, firstReasons);
+        }
+        metrics.ok += okDocs;
+        metrics.fail += failDocs;
+        if (okDocs > 0) metrics.lastOkTs = Date.now();
+        if (failDocs > 0) metrics.lastFailTs = Date.now();
       }
       
       // При успехе - сброс состояния повторных попыток
@@ -524,6 +657,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
       retryState.nextRetryTime = null;
       retryState.isRetrying = false;
       isOpensearchAvailable = true;
+      metrics.lastError = null;
       
       // Если были failed события - логировать успешное восстановление
       if (opensearchFailedBatch.length > 0) {
@@ -546,6 +680,23 @@ const sendBatch = async (events, retryAttempt = 0) => {
         // Не повторяем для non-retryable ошибок
         return;
       }
+
+      // Зачем: если внешний код сам ретраит/буферизует (event-logger), то здесь не делаем backoff/reties,
+      // иначе получаем двойные ретраи и шум в логах.
+      if (!enqueueOnFail) {
+        isOpensearchAvailable = false;
+        metrics.lastError = err && err.message ? err.message : String(err);
+        metrics.lastFailTs = Date.now();
+        metrics.fail += dateEvents.length;
+        const now = Date.now();
+        if (now - lastExternalRetryLogTs > 5000) {
+          lastExternalRetryLogTs = now;
+          osWarn(`[opensearch] ❌ Ошибка bulk (external retry):`, err.message);
+          if (err.code) osWarn(`[opensearch] Код ошибки: ${err.code}`);
+          if (err.status) osWarn(`[opensearch] HTTP статус: ${err.status}`);
+        }
+        throw err;
+      }
       
       // Обновление состояния
       retryState.attemptNumber = retryAttempt + 1;
@@ -553,6 +704,9 @@ const sendBatch = async (events, retryAttempt = 0) => {
       retryState.lastErrorTime = retryState.lastErrorTime || Date.now();
       retryState.isRetrying = true;
       isOpensearchAvailable = false;
+      metrics.lastError = err && err.message ? err.message : String(err);
+      metrics.lastFailTs = Date.now();
+      metrics.fail += dateEvents.length;
       
       // Вычисление задержки с экспоненциальным backoff
       const delay = calculateBackoffDelay(retryAttempt);
@@ -565,26 +719,39 @@ const sendBatch = async (events, retryAttempt = 0) => {
       if (err.status) {
         osWarn(`[opensearch] HTTP статус: ${err.status}`);
       }
-      osWarn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
+      if (enqueueOnFail) {
+        osWarn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
+      }
       
-      // Добавить события в резервное хранилище
-      opensearchFailedBatch.push(...dateEvents);
+      if (enqueueOnFail) {
+        // Добавить события в резервное хранилище
+        opensearchFailedBatch.push(...dateEvents);
+      }
       
       // Ограничить размер резервного хранилища
-      if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
+      if (enqueueOnFail && opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
         const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
         opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
         osError(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
+        metrics.dropped += dropped;
       }
+      metrics.failedBatch = opensearchFailedBatch.length;
       
       // Планирование повторной попытки с экспоненциальным backoff
-      setTimeout(() => {
-        if (opensearchFailedBatch.length > 0) {
-          const eventsToRetry = [...opensearchFailedBatch];
-          opensearchFailedBatch = [];
-          sendBatch(eventsToRetry, retryState.attemptNumber);
-        }
-      }, delay);
+      if (enqueueOnFail) {
+        setTimeout(() => {
+          if (opensearchFailedBatch.length > 0) {
+            const eventsToRetry = [...opensearchFailedBatch];
+            opensearchFailedBatch = [];
+            metrics.failedBatch = opensearchFailedBatch.length;
+            // Зачем: внутренние ретраи не должны приводить к unhandled rejection
+            sendBatch(eventsToRetry, retryState.attemptNumber, { enqueueOnFail: true }).catch(() => {});
+          }
+        }, delay);
+      }
+
+      // Зачем: ошибка должна быть видна вызывающему коду (logger буферизует сам, event-log просто логирует).
+      throw err;
     }
   }
 };
@@ -595,73 +762,79 @@ const retryFailedEvents = () => {
     // Сброс состояния перед новой попыткой
     retryState.attemptNumber = 0;
     retryState.isRetrying = false;
-    sendBatch([...opensearchFailedBatch], 0);
+    // Зачем: внутренние ретраи не должны приводить к unhandled rejection
+    sendBatch([...opensearchFailedBatch], 0, { enqueueOnFail: true }).catch(() => {});
     opensearchFailedBatch = [];
+    metrics.failedBatch = opensearchFailedBatch.length;
   }
 };
 
 // Периодическая проверка доступности OpenSearch
 const checkAvailability = async () => {
-  if (!OPENSEARCH_ENABLED || !OPENSEARCH_URL) return;
-  
-  if (!isOpensearchAvailable) {
-    try {
-      // Используем AbortController для таймаута (node-fetch v2 не поддерживает timeout напрямую)
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 5000);
-      
-      const response = await fetch(`${OPENSEARCH_URL}`, {
-        method: 'HEAD',
-        headers: {
-          'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
-        },
-        agent: getHttpsAgent(),
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (response.ok) {
-        isOpensearchAvailable = true;
-        retryState.attemptNumber = 0;
-        retryState.isRetrying = false;
-        retryState.recoveryScheduled = false;
-        osLog('[opensearch] ✅ OpenSearch снова доступен, новые события будут отправляться');
-        
-        // Попытаться отправить накопленные события
-        if (opensearchFailedBatch.length > 0) {
-          const eventsToRetry = [...opensearchFailedBatch];
-          opensearchFailedBatch = [];
-          sendBatch(eventsToRetry, 0);
-        }
+  if (!isEnabled()) return;
+
+  try {
+    // Используем AbortController для таймаута (node-fetch v2 не поддерживает timeout напрямую)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+    const response = await fetch(`${config.url}`, {
+      method: 'HEAD',
+      headers: {
+        'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
+      },
+      agent: getHttpsAgent(),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (response.ok) {
+      if (!isOpensearchAvailable) {
+        osLog('[opensearch] ✅ OpenSearch снова доступен');
       }
-    } catch (err) {
-      // OpenSearch всё ещё недоступен или таймаут - это нормально
-      if (err.name !== 'AbortError') {
-        // Логируем только не-таймауты
-      }
+      isOpensearchAvailable = true;
+      metrics.lastOkTs = Date.now();
+      return;
+    }
+
+    isOpensearchAvailable = false;
+    metrics.lastFailTs = Date.now();
+    metrics.lastError = `HTTP ${response.status}`;
+  } catch (err) {
+    isOpensearchAvailable = false;
+    metrics.lastFailTs = Date.now();
+    if (err && err.name !== 'AbortError') {
+      metrics.lastError = err.message || String(err);
     }
   }
 };
 
-// Инициализация
-if (OPENSEARCH_ENABLED && OPENSEARCH_URL) {
-  // Инициализация HTTPS Agent с сертификатом
-  getHttpsAgent();
-  
+// Инициализация (backward-compatible)
+// Зачем: модули, которые просто require('./opensearch'), должны продолжать работать.
+// При этом интерактивный event-logger после env-preload может вызвать initFromEnv() повторно.
+initFromEnv();
+if (isEnabled()) {
   // Периодическая повторная отправка failed событий (раз в минуту)
   setInterval(retryFailedEvents, 60000);
-  
-  // Периодическая проверка доступности OpenSearch (раз в 5 минут)
-  setInterval(checkAvailability, 5 * 60 * 1000);
-  
-  osLog(`[opensearch] OpenSearch интеграция включена: ${OPENSEARCH_URL}`);
-} else {
-  osLog('[opensearch] OpenSearch интеграция отключена (OPENSEARCH_ENABLED=false или OPENSEARCH_URL не задан)');
 }
 
 module.exports = {
   sendBatch,
-  isEnabled: () => OPENSEARCH_ENABLED && OPENSEARCH_URL
+  init,
+  initFromEnv,
+  checkAvailability,
+  isAvailable: () => isOpensearchAvailable,
+  getMetrics: () => ({
+    ok: metrics.ok,
+    fail: metrics.fail,
+    queued: opensearchFailedBatch.length,
+    dropped: metrics.dropped,
+    failedBatch: metrics.failedBatch,
+    lastOkTs: metrics.lastOkTs,
+    lastFailTs: metrics.lastFailTs,
+    lastError: metrics.lastError
+  }),
+  isEnabled
 };
 
