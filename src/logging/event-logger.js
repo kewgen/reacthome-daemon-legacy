@@ -18,26 +18,32 @@ const os = require('os'); // Зачем: поддержка ~ в путях (н�
 // Зачем: корректируем пути импортов после перемещения файла в src/logging
 const state = require('../controllers/state');
 const { VAR, TMP } = require('../assets/constants'); // Зачем: единые пути var/tmp для логов и кэшей
-const {
-  getDeviceTypeWithFallback,
-  isActuatorDevice,
-  getSiteName,
-  getProjectName,
-  getHumanName,
-  getTriggerHuman,
-  getTriggerDeviceId,
-  roundToTenths,
-  isNumericParam,
-  NUMERIC_PARAMS
-} = require('./event-log');
-const filters = require('./filters');
+
+// Зачем: определяем TTY максимально рано, т.к. используется в env-preload и политике логирования
+const IS_TTY = !!process.stdout.isTTY;
+
+// Зачем: минимальный BOOT-лог (без зависимости от writeInteractiveLog, который объявлен ниже)
+const bootLog = (line) => {
+  try {
+    if (!IS_TTY) return;
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const today = new Date().toISOString().split('T')[0];
+    const file = path.join(logDir, `event-logger-interactive-${today}.log`);
+    const ts = new Date().toISOString();
+    fs.appendFileSync(file, `[${ts}] [BOOT] ${line}\n`, 'utf8');
+  } catch (e) {}
+};
 
 // ==========================
 // Env loading (needed for interactive запуск)
 // ==========================
 // Зачем: в интерактивном запуске env из PM2 не подхватывается; OpenSearch модуль читает env на require().
 // Поэтому грузим .env / scripts/ecosystem.config.js ДО require('./opensearch').
-const PROJECT_DIR = path.resolve(__dirname, '..', '..');
+// Зачем: источник "корня проекта" для env-preload.
+// Важно: process.cwd() стабильно указывает на корень, т.к. PM2 запускает с cwd=rootDir,
+// а ручной запуск обычно делается из корня репозитория.
+const PROJECT_DIR = process.cwd();
 
 const loadDotEnv = () => {
   try {
@@ -64,6 +70,7 @@ const loadDotEnv = () => {
 const loadEcosystemEnvFallback = () => {
   try {
     const ecoFile = path.join(PROJECT_DIR, 'scripts', 'ecosystem.config.js');
+    bootLog(`ecosystem path: ${ecoFile} exists=${fs.existsSync(ecoFile)}`);
     if (!fs.existsSync(ecoFile)) return;
     // Загружаем конфиг PM2 и вытягиваем env для приложения logger
     // Важно: только если переменная ещё не задана.
@@ -74,7 +81,9 @@ const loadEcosystemEnvFallback = () => {
       apps.find((a) => a?.name === 'logger') ||
       apps.find((a) => String(a?.script || '').includes('event-logger.js')) ||
       null;
+    bootLog(`ecosystem apps=${apps.length} loggerFound=${!!loggerApp}`);
     const env = loggerApp?.env || {};
+    bootLog(`ecosystem envKeys=${Object.keys(env).slice(0, 12).join(',')}`);
     for (const [k, v] of Object.entries(env)) {
       // Зачем: в интерактивном режиме нам критично включать OpenSearch.
       // Если в локальном окружении переменная задана как 'false' (или пуста), но в ecosystem она корректная —
@@ -90,8 +99,10 @@ const loadEcosystemEnvFallback = () => {
       if (v === undefined || v === null) continue;
       process.env[k] = String(v);
     }
+    bootLog(`env applied: OPENSEARCH_ENABLED=${process.env.OPENSEARCH_ENABLED || ''} OPENSEARCH_URL=${process.env.OPENSEARCH_URL ? 'set' : ''}`);
   } catch (e) {
     // ignore
+    bootLog(`ecosystem load error: ${e && e.message ? e.message : String(e)}`);
   }
 };
 
@@ -105,13 +116,34 @@ if (process.env.OPENSEARCH_CA_CERT && process.env.OPENSEARCH_CA_CERT.startsWith(
 
 const opensearch = require('./opensearch');
 
+// ВАЖНО: ./event-log внутри делает require('./opensearch'), поэтому импортируем его только ПОСЛЕ env-preload.
+const {
+  getDeviceTypeWithFallback,
+  isActuatorDevice,
+  getSiteName,
+  getProjectName,
+  getHumanName,
+  getTriggerHuman,
+  getTriggerDeviceId,
+  roundToTenths,
+  isNumericParam,
+  NUMERIC_PARAMS
+} = require('./event-log');
+const filters = require('./filters');
+
 // Зачем: диагностика причины OS⚪ в интерактивном режиме (пишем в файл, не в консоль)
 if (IS_TTY) {
   try {
-    writeInteractiveLog(
-      'INFO',
-      `env: OPENSEARCH_ENABLED=${process.env.OPENSEARCH_ENABLED || ''} OPENSEARCH_URL=${process.env.OPENSEARCH_URL ? 'set' : ''} DAEMON_WS_URL=${process.env.DAEMON_WS_URL || ''}`,
-      []
+    // Важно: writeInteractiveLog объявляется ниже, поэтому здесь пишем напрямую в файл.
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const today = new Date().toISOString().split('T')[0];
+    const file = path.join(logDir, `event-logger-interactive-${today}.log`);
+    const ts = new Date().toISOString();
+    fs.appendFileSync(
+      file,
+      `[${ts}] [BOOT] env: OPENSEARCH_ENABLED=${process.env.OPENSEARCH_ENABLED || ''} OPENSEARCH_URL=${process.env.OPENSEARCH_URL ? 'set' : ''} DAEMON_WS_URL=${process.env.DAEMON_WS_URL || ''}\n`,
+      'utf8'
     );
   } catch (e) {}
 }
@@ -158,8 +190,6 @@ let bufferFlushInterval = null; // Интервал для отправки со
 // ==========================
 // Interactive stats (always on)
 // ==========================
-
-const IS_TTY = !!process.stdout.isTTY;
 let statsLineActive = false;
 let lastStatsLineLen = 0;
 
