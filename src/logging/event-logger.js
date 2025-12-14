@@ -302,7 +302,10 @@ const renderStatsLine = () => {
 
   const wsStatus = isConnected ? '✅' : '❌';
   const osEnabled = opensearch.isEnabled && opensearch.isEnabled();
-  const osRecentFail = stats.lastOsFailTs && (now - stats.lastOsFailTs) < 60_000;
+  // Зачем: учитываем последний успех - если он был позже последней ошибки, статус ✅
+  const osRecentFail = stats.lastOsFailTs && 
+    (now - stats.lastOsFailTs) < 60_000 && 
+    (!stats.lastOsOkTs || stats.lastOsFailTs > stats.lastOsOkTs);
   const osStatus = !osEnabled ? '⚪' : (osRecentFail ? '❌' : '✅');
 
   const bufSize = eventBuffer.length;
@@ -331,7 +334,10 @@ const logStatsLineNonTty = () => {
   const now = Date.now();
   const wsStatus = isConnected ? '✅' : '❌';
   const osEnabled = opensearch.isEnabled && opensearch.isEnabled();
-  const osRecentFail = stats.lastOsFailTs && (now - stats.lastOsFailTs) < 60_000;
+  // Зачем: учитываем последний успех - если он был позже последней ошибки, статус ✅
+  const osRecentFail = stats.lastOsFailTs && 
+    (now - stats.lastOsFailTs) < 60_000 && 
+    (!stats.lastOsOkTs || stats.lastOsFailTs > stats.lastOsOkTs);
   const osStatus = !osEnabled ? '⚪' : (osRecentFail ? '❌' : '✅');
   const bufSize = eventBuffer.length;
   const bufPct = BUFFER_MAX_SIZE > 0 ? Math.round((bufSize * 100) / BUFFER_MAX_SIZE) : 0;
@@ -980,6 +986,7 @@ const generateSyntheticScriptEvent = (scriptId, timestamp, trace_id) => {
   // Создаём синтетическое событие executed
   const syntheticEvent = {
     timestamp: timestamp,
+    logger_pid: process.pid, // Зачем: диагностика дублей при нескольких запущенных процессах логгера
     id: scriptId,
     device: {
       type: 'SCRIPT',
@@ -1602,7 +1609,9 @@ const handleActionSet = (message, wsMeta = null) => {
                           // (иначе скрипты/действия теряются и цепочки рвутся)
                           'action', 'payload', 'ref', 'id', 'schedule', 'timer', 'duration', 'group',
                           // Зачем: нужно для распаковки site в getScriptTargetDevices (site.device/do/dim)
-                          'device', 'do', 'dim'];
+                          'device', 'do', 'dim',
+                          // Зачем: связываем endDevice (UUID) <-> channel (MAC/.../do|dim/x) по bind для корректного trace_id
+                          'bind'];
     for (const field of fieldsToKeep) {
       if (oldState[field] !== undefined) {
         essentialFields[field] = oldState[field];
@@ -2433,7 +2442,9 @@ const connect = () => {
                                     // Зачем: эти поля нужны для трассировки и построения device -> scripts индекса
                                     'action', 'payload', 'ref', 'id', 'schedule', 'timer', 'duration', 'group',
                                     // Зачем: нужно для распаковки site в getScriptTargetDevices (site.device/do/dim)
-                                    'device', 'do', 'dim'];
+                                    'device', 'do', 'dim',
+                                    // Зачем: связываем endDevice (UUID) <-> channel (MAC/.../do|dim/x) по bind для корректного trace_id
+                                    'bind'];
               for (const field of fieldsToKeep) {
                 if (payload[field] !== undefined) {
                   essentialFields[field] = payload[field];
