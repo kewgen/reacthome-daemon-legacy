@@ -59,6 +59,9 @@ const cleanupOldLogs = async (aggressive = false) => {
     const fileInfos = [];
     for (const file of files) {
       if (!file.startsWith('events-') || !file.endsWith('.jsonl')) continue;
+      // Зачем: специальные диагностические логи (consumers/duration/duplicates) не удаляем автоматически,
+      // иначе теряем материал для расследования missing duration и дублей.
+      if (file.includes('-consumers') || file.includes('-duration')) continue;
       
       const filePath = path.join(logDir, file);
       const stats = await fs.promises.stat(filePath);

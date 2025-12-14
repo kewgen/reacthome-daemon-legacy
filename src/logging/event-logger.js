@@ -12,8 +12,10 @@
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
+const fs = require('fs');
 // Зачем: корректируем пути импортов после перемещения файла в src/logging
 const state = require('../controllers/state');
+const { VAR, TMP } = require('../assets/constants'); // Зачем: единые пути var/tmp для логов и кэшей
 const {
   getDeviceTypeWithFallback,
   isActuatorDevice,
@@ -50,7 +52,7 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const STATE_REQUEST_TIMEOUT = 30000; // 30 секунд
 const CONNECTION_TIMEOUT = 10000; // 10 секунд - таймаут подключения к WebSocket
 const MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB - максимальный размер сообщения (защита от DoS)
-const BUFFER_MAX_SIZE = 100; // Максимальный размер буфера событий
+const BUFFER_MAX_SIZE = 1000; // Зачем: выдерживаем недоступность OpenSearch без потери событий
 
 // Константы для WebSocket сообщений (из src/init/constants.js и src/constants.js)
 const { LIST, GET } = require('../init/constants');
@@ -58,6 +60,8 @@ const { ACTION_SET } = require('../constants');
 
 // Состояние
 let ws = null;
+let wsMessageSeq = 0; // Зачем: порядковый номер входящих WS-сообщений для диагностики дублей
+let wsSentSeq = 0; // Зачем: считаем исходящие WS-сообщения (LIST/GET) для панели
 let deviceState = new Map(); // Хранение предыдущего состояния устройств
 let reconnectAttempts = 0;
 let isConnected = false;
@@ -65,6 +69,96 @@ let eventBuffer = []; // Буфер для событий при недосту�
 let stateRequested = false;
 let isInitialStateReceived = false;
 let bufferFlushInterval = null; // Интервал для отправки событий из буфера
+
+// ==========================
+// Interactive stats (always on)
+// ==========================
+
+const IS_TTY = !!process.stdout.isTTY;
+let statsLineActive = false;
+let lastStatsLineLen = 0;
+
+const stats = {
+  processed: 0,         // сколько событий (sendEvent) обработано
+  buffered: 0,          // сколько событий добавлено в буфер
+  flushed: 0,           // сколько событий отправлено из буфера
+  dropped: 0,           // сколько событий удалено при переполнении буфера
+  errors: 0,            // счётчик ошибок логгера (не opensearch)
+  os_ok: 0,             // сколько событий успешно отправлено в OpenSearch
+  os_fail: 0,           // сколько событий не удалось отправить в OpenSearch
+  lastOsOkTs: 0,        // когда был последний успех
+  lastOsFailTs: 0,      // когда был последний фейл
+  lastTickTs: Date.now(),
+  lastProcessed: 0,
+  eps: 0                // events per second (по processed)
+};
+
+const updateEps = () => {
+  const now = Date.now();
+  const dt = Math.max(250, now - stats.lastTickTs);
+  const dProcessed = stats.processed - stats.lastProcessed;
+  stats.eps = Math.round((dProcessed * 1000) / dt);
+  stats.lastTickTs = now;
+  stats.lastProcessed = stats.processed;
+};
+
+const ansi = {
+  red: (s) => `\x1b[31m${s}\x1b[0m`,
+  dim: (s) => `\x1b[2m${s}\x1b[0m`,
+};
+
+const clearStatsLine = () => {
+  if (!IS_TTY) return;
+  if (!statsLineActive) return;
+  process.stdout.write('\r\x1b[2K');
+  statsLineActive = false;
+  lastStatsLineLen = 0;
+};
+
+const renderStatsLine = () => {
+  // Зачем: в non-TTY (PM2) нельзя рисовать \r-панель, делаем периодический лог
+  if (!IS_TTY) return;
+
+  updateEps();
+  const now = Date.now();
+
+  const wsStatus = isConnected ? '✅' : '❌';
+  const osEnabled = opensearch.isEnabled && opensearch.isEnabled();
+  const osRecentFail = stats.lastOsFailTs && (now - stats.lastOsFailTs) < 60_000;
+  const osStatus = !osEnabled ? '⚪' : (osRecentFail ? '❌' : '✅');
+
+  const bufSize = eventBuffer.length;
+  const bufPct = BUFFER_MAX_SIZE > 0 ? Math.round((bufSize * 100) / BUFFER_MAX_SIZE) : 0;
+
+  const neg = (n) => (IS_TTY && n > 0) ? ansi.red(String(n)) : String(n);
+  const epsStr = `${stats.eps}/s`;
+
+  // Формат: 📊 WS✅ r/s OS✅ ok/fail 9/s buf:x/y(%) e:n d:n
+  const line =
+    `📊 WS${wsStatus} ${wsMessageSeq}/${wsSentSeq} ` +
+    `OS${osStatus} ${stats.os_ok}/${neg(stats.os_fail)} ` +
+    `${ansi.dim(epsStr)} ` +
+    `buf:${bufSize}/${BUFFER_MAX_SIZE}(${bufPct}%) ` +
+    `e:${neg(stats.errors)} d:${neg(stats.dropped)}`;
+
+  // Очистка/перерисовка в одну строку
+  const padded = lastStatsLineLen > line.length ? line + ' '.repeat(lastStatsLineLen - line.length) : line;
+  process.stdout.write('\r' + padded);
+  statsLineActive = true;
+  lastStatsLineLen = Math.max(lastStatsLineLen, line.length);
+};
+
+const logStatsLineNonTty = () => {
+  updateEps();
+  const now = Date.now();
+  const wsStatus = isConnected ? '✅' : '❌';
+  const osEnabled = opensearch.isEnabled && opensearch.isEnabled();
+  const osRecentFail = stats.lastOsFailTs && (now - stats.lastOsFailTs) < 60_000;
+  const osStatus = !osEnabled ? '⚪' : (osRecentFail ? '❌' : '✅');
+  const bufSize = eventBuffer.length;
+  const bufPct = BUFFER_MAX_SIZE > 0 ? Math.round((bufSize * 100) / BUFFER_MAX_SIZE) : 0;
+  log(`📊 WS${wsStatus} ${wsMessageSeq}/${wsSentSeq} OS${osStatus} ${stats.os_ok}/${stats.os_fail} ${stats.eps}/s buf:${bufSize}/${BUFFER_MAX_SIZE}(${bufPct}%) e:${stats.errors} d:${stats.dropped}`);
+};
 
 // 1. Кэш состояния актуаторов (лампы, вентиляторы, кондеи, тёплые полы)
 // Зачем: хранит время включения для вычисления длительности работы и обогащения trace_id
@@ -108,7 +202,8 @@ const deviceToScriptsIndex = new Map(); // deviceId -> Set<scriptId>
 const TRACE_CACHE_TTL_MS = 3600000; // 1 час - traceIdCache
 const DEVICE_STATE_MAX_SIZE = 500; // Максимальный размер deviceState кэша (уменьшено для экономии памяти)
 const DEVICE_STATE_TTL_MS = 3600000; // 1 час - TTL для deviceState (зачем: удаление неактивных устройств)
-const ACTUATOR_CACHE_TTL_MS = 86400000; // 24 часа - actuatorStateCache и channelStateCache
+const ACTUATOR_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 дней - actuatorStateCache и channelStateCache
+// Зачем: потребителей всего несколько десятков устройств, поэтому размер кэша мал; увеличиваем TTL для длинных сессий работы устройств.
 
 // Зачем: флаг отладки для условного логирования (включается через DEBUG=true)
 const DEBUG_MODE = process.env.DEBUG === 'true';
@@ -116,12 +211,125 @@ const DEBUG_MODE = process.env.DEBUG === 'true';
 // Логирование
 const log = (message, ...args) => {
   const timestamp = new Date().toISOString();
+  clearStatsLine(); // Зачем: чтобы 📊-строка не "прилипала" к обычным логам в TTY
   console.log(`[${timestamp}] [event-logger] ${message}`, ...args);
 };
 
 const logError = (message, ...args) => {
   const timestamp = new Date().toISOString();
+  stats.errors++; // Зачем: счётчик ошибок для панели
+  clearStatsLine(); // Зачем: чтобы 📊-строка не "прилипала" к ошибкам в TTY
   console.error(`[${timestamp}] [event-logger] ERROR: ${message}`, ...args);
+};
+
+// ==========================
+// Cache persistence (restart-safe)
+// ==========================
+
+const ACTUATOR_CACHE_FILE = path.join(TMP, 'actuator-cache.json'); // Зачем: совместимость с существующим файлом кэша
+let cacheSaveInterval = null;
+let isShuttingDown = false;
+
+const ensureTmpDir = () => {
+  try {
+    if (!fs.existsSync(TMP)) fs.mkdirSync(TMP, { recursive: true });
+  } catch (e) {
+    // Зачем: проблемы с FS не должны ломать основной поток
+  }
+};
+
+const saveActuatorCache = () => {
+  try {
+    ensureTmpDir();
+
+    const now = Date.now();
+    // Зачем: сохраняем в исторически используемом формате (actuators/channels массив объектов),
+    // чтобы восстановление работало и после обновлений.
+    const payload = {
+      timestamp: now,
+      actuators: Array.from(actuatorStateCache.entries()).map(([id, v]) => ({ id, ...(v || {}) })),
+      channels: Array.from(channelStateCache.entries()).map(([id, v]) => ({ id, ...(v || {}) })),
+    };
+
+    // Зачем: атомарная запись, чтобы не потерять кэш при внезапной остановке процесса
+    const tmpFile = `${ACTUATOR_CACHE_FILE}.tmp`;
+    fs.writeFileSync(tmpFile, JSON.stringify(payload), 'utf8');
+    fs.renameSync(tmpFile, ACTUATOR_CACHE_FILE);
+  } catch (e) {
+    // Зачем: сохранение кэша не должно ронять сервис
+  }
+};
+
+const loadActuatorCache = () => {
+  try {
+    ensureTmpDir();
+    if (!fs.existsSync(ACTUATOR_CACHE_FILE)) return;
+
+    const raw = fs.readFileSync(ACTUATOR_CACHE_FILE, 'utf8');
+    if (!raw) return;
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+
+    // Поддерживаем оба формата:
+    // 1) { actuators:[{id,...}], channels:[{id,...}] } (исторический)
+    // 2) { actuator:[[id,obj],...], channel:[[id,obj],...] } (внутренний/служебный)
+    const actuatorObjects = Array.isArray(parsed.actuators) ? parsed.actuators : [];
+    const channelObjects = Array.isArray(parsed.channels) ? parsed.channels : [];
+    const actuatorEntries = Array.isArray(parsed.actuator) ? parsed.actuator : [];
+    const channelEntries = Array.isArray(parsed.channel) ? parsed.channel : [];
+
+    // Валидация/фильтрация по TTL
+    let restoredActuators = 0;
+    let restoredChannels = 0;
+
+    actuatorStateCache.clear();
+    // формат 1
+    for (const obj of actuatorObjects) {
+      const id = obj && obj.id;
+      if (!id || !obj || typeof obj !== 'object') continue;
+      const ts = obj.onTimestamp;
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+      if ((now - ts) > ACTUATOR_CACHE_TTL_MS) continue;
+      const { id: _id, ...rest } = obj;
+      actuatorStateCache.set(id, rest);
+      restoredActuators++;
+    }
+    // формат 2
+    for (const [id, v] of actuatorEntries) {
+      if (!id || !v || typeof v !== 'object') continue;
+      const ts = v.onTimestamp;
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+      if ((now - ts) > ACTUATOR_CACHE_TTL_MS) continue;
+      actuatorStateCache.set(id, v);
+      restoredActuators++;
+    }
+
+    channelStateCache.clear();
+    // формат 1
+    for (const obj of channelObjects) {
+      const id = obj && obj.id;
+      if (!id || !obj || typeof obj !== 'object') continue;
+      const ts = obj.onTimestamp;
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+      if ((now - ts) > ACTUATOR_CACHE_TTL_MS) continue;
+      const { id: _id, ...rest } = obj;
+      channelStateCache.set(id, rest);
+      restoredChannels++;
+    }
+    // формат 2
+    for (const [id, v] of channelEntries) {
+      if (!id || !v || typeof v !== 'object') continue;
+      const ts = v.onTimestamp;
+      if (typeof ts !== 'number' || !Number.isFinite(ts)) continue;
+      if ((now - ts) > ACTUATOR_CACHE_TTL_MS) continue;
+      channelStateCache.set(id, v);
+      restoredChannels++;
+    }
+
+    log(`♻️ Восстановлен кэш длительности: actuators=${restoredActuators}, channels=${restoredChannels} (${path.basename(ACTUATOR_CACHE_FILE)})`);
+  } catch (e) {
+    logError('Ошибка восстановления кэша длительности:', e.message);
+  }
 };
 
 // Зачем: условное логирование только в режиме отладки
@@ -285,9 +493,11 @@ const getActuatorClass = (id, newState) => {
 // Зачем: определение, является ли устройство потребителем (алгоритм из src/monitor.js)
 const isConsumerDevice = (deviceType) => {
   if (!deviceType) return false;
-  // Если тип - строка и содержится в CONSUMER_TYPES
-  if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
-    return true;
+  // Зачем: типы могут приходить в разном регистре (например LIGHT_LED vs light_LED),
+  // нормализуем для устойчивого определения consumer.
+  if (typeof deviceType === 'string') {
+    const normalized = deviceType.toLowerCase();
+    return CONSUMER_TYPES.some((t) => String(t).toLowerCase() === normalized);
   }
   return false;
 };
@@ -1058,7 +1268,7 @@ setInterval(() => {
 }, 5000); // Очистка каждые 5 секунд (увеличена частота для более агрессивной очистки)
 
 // Обработка ACTION_SET сообщений
-const handleActionSet = (message) => {
+const handleActionSet = (message, wsMeta = null) => {
   try {
     const { id, payload, _context } = message;
     
@@ -1140,7 +1350,7 @@ const handleActionSet = (message) => {
     
     // Обрабатываем событие (используем логику из event-log.js)
     // Зачем: передаем информацию о состоянии актуатора для обогащения событий
-    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo);
+    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo, wsMeta);
     
   } catch (error) {
     logError('Ошибка обработки ACTION_SET:', error.message, error.stack);
@@ -1149,8 +1359,14 @@ const handleActionSet = (message) => {
 
 // Обработка события (логика из event-log.js)
 // Зачем: обработка событий с обогащением информацией о включении/выключении устройств
-const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null) => {
+const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null, wsMeta = null) => {
   if (!id || !newState || typeof newState !== 'object') return;
+
+  // Зачем: используем timestamp из payload (если есть), чтобы дедупликация работала стабильно.
+  // Иначе Date.now() даёт разные значения на повторных сообщениях (1-2мс), и получаем "дубли" в OpenSearch и consumer-логах.
+  const eventTimestamp = (typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
+    ? newState.timestamp
+    : Date.now();
   
   // Если передан changedPayload, логируем только параметры из payload
   const paramsToCheck = changedPayload ? Object.keys(changedPayload) : null;
@@ -1196,7 +1412,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     const isConsumer = isConsumerDevice(deviceType);
     
     const event = {
-      timestamp: Date.now(),
+      timestamp: eventTimestamp,
       id,
       device: {
         type: null,
@@ -1275,7 +1491,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     }
     
     // Отправляем событие
-    sendEvent(enrichedEvent);
+    sendEvent(enrichedEvent, wsMeta);
     return; // Логируем только событие запуска скрипта
   }
   
@@ -1386,7 +1602,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     
     // Зачем: добавляем on_timestamp и duration на верхнем уровне события для удобства мониторинга
     const eventBase = {
-      timestamp: Date.now(),
+      timestamp: eventTimestamp,
       id,
       device: {
         type: deviceTypeStr,
@@ -1492,23 +1708,33 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     }
     
     // Отправляем событие
-    sendEvent(enrichedEvent);
+    sendEvent(enrichedEvent, wsMeta);
   }
 };
 
 // Отправка события в OpenSearch или буфер
-const sendEvent = (event) => {
+const sendEvent = (event, wsMeta = null) => {
+  stats.processed++;
   // Зачем: записываем событие в локальный файл для резервного хранения
   writeEventToFile(event);
+  // Зачем: отдельный лог потребителей + детектор дубликатов для анализа отсутствия duration и повторов
+  writeConsumerEventToFile(event, wsMeta);
   
   // Проверяем доступность OpenSearch
   if (opensearch.isEnabled && opensearch.isEnabled()) {
     // Отправляем напрямую
-    opensearch.sendBatch([event]).catch(err => {
-      logError('Ошибка отправки события в OpenSearch:', err.message);
-      // При ошибке добавляем в буфер
-      addToBuffer(event);
-    });
+    opensearch.sendBatch([event])
+      .then(() => {
+        stats.os_ok += 1;
+        stats.lastOsOkTs = Date.now();
+      })
+      .catch(err => {
+        stats.os_fail += 1;
+        stats.lastOsFailTs = Date.now();
+        logError('Ошибка отправки события в OpenSearch:', err.message);
+        // При ошибке добавляем в буфер
+        addToBuffer(event);
+      });
   } else {
     // Добавляем в буфер
     addToBuffer(event);
@@ -1517,10 +1743,16 @@ const sendEvent = (event) => {
 
 // Запись события в локальный файл
 // Зачем: резервное хранение событий в локальных файлах
-const fs = require('fs');
-const { VAR } = require('../assets/constants');
 
 let currentLogFile = null;
+let currentConsumersLogFile = null; // Зачем: отдельный файл логов только для потребителей
+let currentConsumersDupLogFile = null; // Зачем: отдельный файл для дубликатов потребителей
+
+// Зачем: детектор дубликатов (в пределах окна) для диагностики повторных событий.
+// Окно делаем небольшим, т.к. нас интересуют повторы из WS/драйверов в течение секунд.
+const DUPLICATE_WINDOW_MS = parseInt(process.env.DUPLICATE_WINDOW_MS || '2000', 10); // 2 секунды
+const DUPLICATE_MAX_KEYS = parseInt(process.env.DUPLICATE_MAX_KEYS || '50000', 10);
+const recentConsumerEventKeyCache = new Map(); // key -> { ts, ws_seq }
 
 const writeEventToFile = (event) => {
   try {
@@ -1549,13 +1781,104 @@ const writeEventToFile = (event) => {
   }
 };
 
+// Запись события потребителя в отдельный файл + фиксация дубликатов
+// Зачем: быстро анализировать только consumer-события и отлавливать повторы (частая причина "плавающего duration")
+const writeConsumerEventToFile = (event, wsMeta = null) => {
+  try {
+    if (!event || typeof event !== 'object') return;
+
+    const isConsumerEvent =
+      (event.device && event.device.consumer === true) ||
+      (event.endDevice && event.endDevice.consumer === true);
+    if (!isConsumerEvent) return;
+
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
+    }
+
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD
+    const consumersLogFile = path.join(logDir, `events-${today}-consumers.jsonl`);
+    const consumersDupLogFile = path.join(logDir, `events-${today}-consumers-duplicates.jsonl`);
+
+    if (currentConsumersLogFile !== consumersLogFile) {
+      currentConsumersLogFile = consumersLogFile;
+      // Зачем: файл должен существовать, чтобы можно было tail-ить его сразу, не дожидаясь первого append
+      try { fs.closeSync(fs.openSync(currentConsumersLogFile, 'a')); } catch (e) {}
+    }
+    if (currentConsumersDupLogFile !== consumersDupLogFile) {
+      currentConsumersDupLogFile = consumersDupLogFile;
+      // Зачем: файл дублей должен существовать всегда — это упрощает диагностику "дубли на WS или у нас"
+      try { fs.closeSync(fs.openSync(currentConsumersDupLogFile, 'a')); } catch (e) {}
+    }
+
+    const now = Date.now();
+    // Зачем: ключ без event.timestamp, т.к. повторные сообщения часто отличаются на 1-2мс по timestamp,
+    // но по смыслу это одно и то же событие (и именно такие повторы ломают duration/кэш).
+    const key = `${event.id}|${event.param}|${String(event.old)}|${String(event.new)}`;
+    const last = recentConsumerEventKeyCache.get(key);
+
+    // Если это дубль в пределах окна — пишем в отдельный файл и НЕ дублируем в consumers.jsonl
+    if (last && (now - last.ts) <= DUPLICATE_WINDOW_MS) {
+      fs.appendFileSync(
+        currentConsumersDupLogFile,
+        JSON.stringify({
+          ts: now,
+          iso: new Date(now).toISOString(),
+          key,
+          // Зачем: подтверждаем/опровергаем, что дубли приходят разными WS-сообщениями
+          ws_seq_prev: last.ws_seq ?? null,
+          ws_seq_now: wsMeta && wsMeta.seq ? wsMeta.seq : null,
+          id: event.id,
+          timestamp: event.timestamp,
+          param: event.param,
+          old: event.old,
+          new: event.new,
+          device: event.device ? { human: event.device.human, type: event.device.type } : null,
+          endDevice: event.endDevice ? { human: event.endDevice.human, type: event.endDevice.type } : null
+        }) + '\n',
+        'utf8'
+      );
+      return;
+    }
+
+    recentConsumerEventKeyCache.set(key, {
+      ts: now,
+      ws_seq: wsMeta && wsMeta.seq ? wsMeta.seq : null
+    });
+
+    // Периодическая чистка (простая) и ограничение размера
+    if (recentConsumerEventKeyCache.size > DUPLICATE_MAX_KEYS) {
+      const threshold = now - DUPLICATE_WINDOW_MS;
+      for (const [k, info] of recentConsumerEventKeyCache.entries()) {
+        if (info && typeof info.ts === 'number' && info.ts < threshold) recentConsumerEventKeyCache.delete(k);
+      }
+      if (recentConsumerEventKeyCache.size > DUPLICATE_MAX_KEYS) {
+        // Если всё равно много — чистим самые старые
+        const entries = Array.from(recentConsumerEventKeyCache.entries());
+        entries.sort((a, b) => (a[1]?.ts ?? 0) - (b[1]?.ts ?? 0));
+        const toDrop = recentConsumerEventKeyCache.size - DUPLICATE_MAX_KEYS;
+        for (let i = 0; i < toDrop; i++) {
+          recentConsumerEventKeyCache.delete(entries[i][0]);
+        }
+      }
+    }
+
+    fs.appendFileSync(currentConsumersLogFile, JSON.stringify(event) + '\n', 'utf8');
+  } catch (err) {
+    // Зачем: логирование потребителей не должно ломать основной поток
+  }
+};
+
 // Добавление события в буфер
 const addToBuffer = (event) => {
   eventBuffer.push(event);
+  stats.buffered++;
   
   // Если буфер переполнен, удаляем старые события
   if (eventBuffer.length > BUFFER_MAX_SIZE) {
     const removed = eventBuffer.shift();
+    stats.dropped++;
     logError(`Буфер переполнен, удалено старое событие: ${removed?.id || 'unknown'}/${removed?.param || 'unknown'}`);
   }
 };
@@ -1570,8 +1893,13 @@ const flushBuffer = async () => {
     
     try {
       await opensearch.sendBatch(eventsToSend);
+      stats.os_ok += eventsToSend.length;
+      stats.flushed += eventsToSend.length;
+      stats.lastOsOkTs = Date.now();
       log(`Отправлено ${eventsToSend.length} событий из буфера`);
     } catch (err) {
+      stats.os_fail += eventsToSend.length;
+      stats.lastOsFailTs = Date.now();
       logError('Ошибка отправки событий из буфера:', err.message);
       // Возвращаем события в буфер
       eventBuffer = [...eventsToSend, ...eventBuffer];
@@ -1604,6 +1932,7 @@ const handleList = (message) => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         pendingGetRequests = deviceIds.length;
         logDebug('Отправлен GET запрос', { count: deviceIds.length, firstIds: deviceIds.slice(0, 5) });
+        wsSentSeq++; // Зачем: счётчик исходящих WS сообщений для панели
         ws.send(JSON.stringify({ type: GET, state: deviceIds }));
         
         // Таймаут для получения всех ответов
@@ -1638,6 +1967,7 @@ const requestFullState = () => {
   
   // Отправляем LIST для получения полного состояния
   if (ws && ws.readyState === WebSocket.OPEN) {
+    wsSentSeq++; // Зачем: счётчик исходящих WS сообщений для панели
     ws.send(JSON.stringify({ type: LIST }));
     
     // LIST вернёт полное состояние в формате { type: 'list', state: [[id, state], ...] }
@@ -1714,8 +2044,9 @@ const connect = () => {
         log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
         setTimeout(connect, RECONNECT_DELAY);
       } else {
-        logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`);
-        process.exit(1);
+        logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS}). Продолжаем пытаться дальше.`);
+        reconnectAttempts = 0;
+        setTimeout(connect, RECONNECT_DELAY);
       }
     }
   }, CONNECTION_TIMEOUT);
@@ -1735,6 +2066,7 @@ const connect = () => {
   
   ws.on('message', (data) => {
     try {
+      const wsMeta = { seq: ++wsMessageSeq }; // Зачем: диагностика дублей (разные ws_seq = дубли на WS)
       // Зачем: Безопасный парсинг JSON с ограничением размера для предотвращения DoS атак
       const dataString = data.toString();
       if (dataString.length > MAX_MESSAGE_SIZE) {
@@ -1812,7 +2144,7 @@ const connect = () => {
             }
           } else {
             // Это событие изменения - обрабатываем
-            handleActionSet(message);
+            handleActionSet(message, wsMeta);
           }
           break;
         default:
@@ -1844,15 +2176,22 @@ const connect = () => {
       log(`Попытка переподключения ${reconnectAttempts}/${MAX_RECONNECT_ATTEMPTS} через ${RECONNECT_DELAY}мс...`);
       setTimeout(connect, RECONNECT_DELAY);
     } else {
-      logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS})`);
-      process.exit(1);
+      logError(`Достигнуто максимальное количество попыток переподключения (${MAX_RECONNECT_ATTEMPTS}). Продолжаем пытаться дальше.`);
+      reconnectAttempts = 0;
+      setTimeout(connect, RECONNECT_DELAY);
     }
   });
 };
 
 // Graceful shutdown
 const shutdown = () => {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
   log('Получен сигнал завершения, завершаем работу...');
+
+  // Зачем: при рестарте/остановке сохраняем кэши, чтобы не терять duration между on/off
+  saveActuatorCache();
+  if (cacheSaveInterval) clearInterval(cacheSaveInterval);
   
   // Останавливаем интервал
   if (bufferFlushInterval) {
@@ -1864,20 +2203,52 @@ const shutdown = () => {
     if (ws) {
       ws.close();
     }
+    clearStatsLine();
+    log(`📊 Финал: p=${stats.processed} os=${stats.os_ok}/${stats.os_fail} buf=${eventBuffer.length}/${BUFFER_MAX_SIZE} e=${stats.errors} d=${stats.dropped}`);
     process.exit(0);
   }).catch(err => {
     logError('Ошибка при завершении:', err.message);
+    clearStatsLine();
     process.exit(1);
   });
 };
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+process.on('beforeExit', () => {
+  // Зачем: best-effort сохранение кэша перед завершением процесса
+  saveActuatorCache();
+});
+process.on('uncaughtException', (err) => {
+  // Зачем: сохраняем кэш даже при падении, чтобы не потерять onTimestamp
+  logError('uncaughtException:', err && err.message ? err.message : String(err));
+  saveActuatorCache();
+  process.exit(1);
+});
+process.on('unhandledRejection', (err) => {
+  // Зачем: сохраняем кэш при необработанном промисе
+  logError('unhandledRejection:', err && err.message ? err.message : String(err));
+  saveActuatorCache();
+});
 
 // Запуск
 
 log(`Подключение к демону: ${DAEMON_WS_URL}`);
 log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
+
+// Зачем: восстанавливаем кэш длительности до подключения к WS, чтобы duration считался после рестарта
+loadActuatorCache();
+// Зачем: периодически сохраняем кэш на диск (best-effort)
+cacheSaveInterval = setInterval(saveActuatorCache, 60_000);
+
+// Зачем: интерактивная панель всегда включена.
+// В TTY — обновляем одну строку; в non-TTY (PM2) — пишем компактную строку периодически.
+setInterval(() => {
+  if (IS_TTY) renderStatsLine();
+}, 500);
+setInterval(() => {
+  if (!IS_TTY) logStatsLineNonTty();
+}, 30_000);
 
 // Периодически пытаемся отправить события из буфера
 bufferFlushInterval = setInterval(flushBuffer, 5000); // Каждые 5 секунд
