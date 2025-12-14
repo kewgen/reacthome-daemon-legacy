@@ -939,9 +939,10 @@ const getScriptTargetDevices = (scriptId) => {
         addTarget(actionObj.payload.onOff);
       }
       if (Array.isArray(actionObj.payload.test)) {
-        for (const testId of actionObj.payload.test) {
-          if (typeof testId === 'string') addTarget(testId);
-        }
+        // Важно: payload.test — это условия (что проверяем), а не то, что меняем.
+        // Зачем: если добавлять test[] в targetDevices, то при изменении условного устройства
+        // будут появляться ложные synthetic executed у скриптов (как “start/stop heat младшая” от изменения Бра).
+        // Если когда-нибудь понадобится граф «что влияет на условие», делаем отдельный индекс, не смешивая с targets.
       }
     }
     
@@ -1029,7 +1030,25 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp, visited = null)
   // 1. Определяем trace_id для цепочки
   // Зачем: если запуск скрипта выведен из уже связанного события (deviceId уже имеет trace_id),
   // то наследуем trace_id, чтобы цепочка не рвалась (например: Start -> Скрипт B -> устройство).
-  const inheritedTraceId = traceIdCache.get(deviceId);
+  let inheritedTraceId = traceIdCache.get(deviceId);
+  
+  // Зачем: если скрипт запущен schedule/timer, но устройство не имеет trace_id,
+  // проверяем целевые устройства скрипта - возможно они уже имеют trace_id от другой цепочки
+  if (!inheritedTraceId || typeof inheritedTraceId !== 'string' || inheritedTraceId.length === 0) {
+    const targetDevices = getScriptTargetDevices(scriptId);
+    if (targetDevices && targetDevices.size > 0) {
+      // Ищем trace_id среди целевых устройств скрипта
+      for (const targetDeviceId of targetDevices) {
+        const targetTraceId = traceIdCache.get(targetDeviceId);
+        if (targetTraceId && typeof targetTraceId === 'string' && targetTraceId.length > 0) {
+          inheritedTraceId = targetTraceId;
+          log(`🔗 Скрипт ${scriptId.slice(0,8)} унаследовал trace_id=${inheritedTraceId.slice(0,8)} от целевого устройства ${targetDeviceId.slice(0,8)}`);
+          break;
+        }
+      }
+    }
+  }
+  
   const trace_id = (typeof inheritedTraceId === 'string' && inheritedTraceId.length > 0)
     ? inheritedTraceId
     : uuidv4();
@@ -1051,6 +1070,19 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp, visited = null)
   traceIdCache.set(scriptId, trace_id);
   for (const devId of targetDevices) {
     traceIdCache.set(devId, trace_id);
+  }
+  
+  // Зачем: если скрипт запущен schedule/timer, связываем schedule/timer с trace_id скрипта
+  // чтобы schedule попал в цепочку устройств (schedule уже имеет trace_id в кэше, обновляем его)
+  const deviceFields = getDeviceFields(scriptId);
+  if (deviceFields && deviceFields.schedule) {
+    // Это скрипт со schedule - обновляем trace_id для schedule, чтобы он попал в цепочку
+    const existingScheduleTraceId = traceIdCache.get(scriptId);
+    if (existingScheduleTraceId && existingScheduleTraceId !== trace_id) {
+      // Если schedule уже имел другой trace_id, обновляем его на trace_id скрипта
+      traceIdCache.set(scriptId, trace_id);
+      log(`🔗 Расписание скрипта ${scriptId.slice(0,8)} обновлено с trace_id=${existingScheduleTraceId.slice(0,8)} на trace_id=${trace_id.slice(0,8)}`);
+    }
   }
   
   // 5. Генерируем синтетическое событие executed
@@ -1394,6 +1426,27 @@ const generateTraceId = (id, context, param) => {
       recentEventsCache.set(id, { timestamp: now, trace_id: traceId, type: triggerType });
     if (bindId) traceIdCache.set(bindId, traceId);
     return traceId;
+  }
+  
+  // Зачем: если это schedule/timer запускает скрипт, проверяем целевые устройства скрипта
+  // Если они уже имеют trace_id от другой цепочки, наследуем его, чтобы schedule попал в цепочку
+  if ((triggerType === 'schedule' || triggerType === 'timer') && triggerRef === id) {
+    const targetDevices = getScriptTargetDevices(id);
+    if (targetDevices && targetDevices.size > 0) {
+      // Ищем trace_id среди целевых устройств скрипта
+      for (const targetDeviceId of targetDevices) {
+        if (traceIdCache.has(targetDeviceId)) {
+          const inheritedTraceId = traceIdCache.get(targetDeviceId);
+          // Наследуем trace_id от целевого устройства
+          traceIdCache.set(id, inheritedTraceId);
+          traceIdCache.set(triggerRef, inheritedTraceId);
+          recentEventsCache.set(id, { timestamp: now, trace_id: inheritedTraceId, type: triggerType });
+          if (bindId) traceIdCache.set(bindId, inheritedTraceId);
+          log(`🔗 ${triggerType === 'schedule' ? 'Расписание' : 'Таймер'} ${id.slice(0,8)} унаследовал trace_id=${inheritedTraceId.slice(0,8)} от целевого устройства ${targetDeviceId.slice(0,8)}`);
+          return inheritedTraceId;
+        }
+      }
+    }
   }
   
   // Если trigger есть, но trace_id не найден в кэше - генерируем новый
@@ -1820,6 +1873,69 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     // Отправляем событие
     sendEvent(enrichedEvent, wsMeta);
     return; // Логируем только событие запуска скрипта
+  }
+  
+  // Зачем: логируем событие от schedule скрипта, даже если у него нет executed/last_execution
+  // чтобы schedule попал в цепочку trace_id
+  const role = getDeviceRole(id);
+  if (role === 'schedule' && context.trace_id) {
+    // Получаем данные устройства из state
+    const deviceFields = getDeviceFields(id);
+    const deviceName = deviceFields?.name ?? null;
+    const deviceCode = deviceFields?.code ?? null;
+    const deviceTitle = deviceFields?.title ?? null;
+    const deviceHuman = getHumanName({ title: deviceTitle, code: deviceCode, name: deviceName }) || getHumanName(newState);
+    const deviceType = getDeviceTypeWithFallback(id);
+    let deviceTypeStr = null;
+    if (typeof deviceType === 'number') {
+      deviceTypeStr = `DEVICE_TYPE_${deviceType.toString(16).toUpperCase()}`;
+    } else if (typeof deviceType === 'string') {
+      deviceTypeStr = deviceType.toUpperCase();
+    }
+    const isConsumer = isConsumerDevice(deviceType);
+    
+    // Получаем site из родительской локации
+    let siteName = getSiteName(id);
+    if (!siteName && newState.parent) {
+      siteName = getSiteName(newState.parent);
+    }
+    
+    const triggerDeviceId = getTriggerDeviceId(context);
+    
+    const scheduleEvent = {
+      timestamp: eventTimestamp,
+      logger_pid: process.pid,
+      id,
+      device: {
+        type: deviceTypeStr,
+        human: deviceHuman,
+        name: deviceName,
+        code: deviceCode,
+        title: deviceTitle,
+        consumer: isConsumer
+      },
+      param: 'schedule',
+      old: null,
+      new: true,
+      trigger: {
+        type: 'schedule',
+        ref: id,
+        id: triggerDeviceId,
+        human: getTriggerHuman(context, triggerDeviceId),
+        session: context.session || null,
+        remote_ip: context.remote_ip || null
+      },
+      site: siteName || null,
+      project: getProjectName(id),
+      trace_id: context.trace_id || null,
+      kind: 'schedule_triggered',
+      extra: {}
+    };
+    
+    // Отправляем событие от schedule
+    sendEvent(scheduleEvent, wsMeta);
+    log(`📅 [SCHEDULE] Записано событие от расписания ${id.slice(0,8)}, trace_id=${context.trace_id?.slice(0,8) || 'null'}`);
+    return; // Логируем только событие от schedule
   }
   
   // Использование типизированной системы фильтров
