@@ -13,6 +13,7 @@ const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
+const util = require('util'); // Зачем: безопасно сериализуем объекты в файл-лог без console spam
 // Зачем: корректируем пути импортов после перемещения файла в src/logging
 const state = require('../controllers/state');
 const { VAR, TMP } = require('../assets/constants'); // Зачем: единые пути var/tmp для логов и кэшей
@@ -105,6 +106,38 @@ const updateEps = () => {
 const ansi = {
   red: (s) => `\x1b[31m${s}\x1b[0m`,
   dim: (s) => `\x1b[2m${s}\x1b[0m`,
+};
+
+// ==========================
+// Logging policy (interactive-safe)
+// ==========================
+// Правило: в интерактивном режиме (TTY) нельзя писать "обычные" логи в консоль — это ломает панель.
+// Решение: при IS_TTY пишем логи в файл, а в консоль оставляем только 📊 строку панели.
+const formatLogArgs = (args) => {
+  try {
+    if (!args || args.length === 0) return '';
+    return args
+      .map((a) => (typeof a === 'string' ? a : util.inspect(a, { depth: 4, breakLength: 160 })))
+      .join(' ');
+  } catch (e) {
+    return '';
+  }
+};
+
+let currentInteractiveLogFile = null;
+const writeInteractiveLog = (level, message, args) => {
+  try {
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const today = new Date().toISOString().split('T')[0];
+    const file = path.join(logDir, `event-logger-interactive-${today}.log`);
+    if (currentInteractiveLogFile !== file) currentInteractiveLogFile = file;
+    const ts = new Date().toISOString();
+    const extra = formatLogArgs(args);
+    fs.appendFileSync(currentInteractiveLogFile, `[${ts}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`, 'utf8');
+  } catch (e) {
+    // Зачем: логирование не должно ломать основной поток
+  }
 };
 
 const clearStatsLine = () => {
@@ -210,15 +243,21 @@ const DEBUG_MODE = process.env.DEBUG === 'true';
 
 // Логирование
 const log = (message, ...args) => {
+  if (IS_TTY) {
+    writeInteractiveLog('INFO', message, args);
+    return;
+  }
   const timestamp = new Date().toISOString();
-  clearStatsLine(); // Зачем: чтобы 📊-строка не "прилипала" к обычным логам в TTY
   console.log(`[${timestamp}] [event-logger] ${message}`, ...args);
 };
 
 const logError = (message, ...args) => {
-  const timestamp = new Date().toISOString();
   stats.errors++; // Зачем: счётчик ошибок для панели
-  clearStatsLine(); // Зачем: чтобы 📊-строка не "прилипала" к ошибкам в TTY
+  if (IS_TTY) {
+    writeInteractiveLog('ERROR', message, args);
+    return;
+  }
+  const timestamp = new Date().toISOString();
   console.error(`[${timestamp}] [event-logger] ERROR: ${message}`, ...args);
 };
 
@@ -335,6 +374,11 @@ const loadActuatorCache = () => {
 // Зачем: условное логирование только в режиме отладки
 const logDebug = (message, ...args) => {
   if (DEBUG_MODE) {
+    // Зачем: в интерактивном режиме debug тоже нельзя писать в консоль
+    if (IS_TTY) {
+      writeInteractiveLog('DEBUG', message, args);
+      return;
+    }
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] [event-logger] [DEBUG] ${message}`, ...args);
   }
@@ -2253,12 +2297,22 @@ const shutdown = () => {
     if (ws) {
       ws.close();
     }
-    clearStatsLine();
-    log(`📊 Финал: p=${stats.processed} os=${stats.os_ok}/${stats.os_fail} buf=${eventBuffer.length}/${BUFFER_MAX_SIZE} e=${stats.errors} d=${stats.dropped}`);
+    // Зачем: в интерактивном режиме не пишем "обычные" логи, но финальный статус панели показать можно.
+    if (IS_TTY) {
+      clearStatsLine();
+      renderStatsLine();
+      process.stdout.write('\n');
+    } else {
+      log(`📊 Финал: p=${stats.processed} os=${stats.os_ok}/${stats.os_fail} buf=${eventBuffer.length}/${BUFFER_MAX_SIZE} e=${stats.errors} d=${stats.dropped}`);
+    }
     process.exit(0);
   }).catch(err => {
     logError('Ошибка при завершении:', err.message);
-    clearStatsLine();
+    if (IS_TTY) {
+      clearStatsLine();
+      renderStatsLine();
+      process.stdout.write('\n');
+    }
     process.exit(1);
   });
 };

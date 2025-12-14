@@ -3,6 +3,46 @@ const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const util = require('util');
+const { VAR } = require('../assets/constants'); // Зачем: файл-лог вместо console в интерактивном режиме
+
+// Правило: в интерактивном режиме нельзя спамить в консоль (ломает 📊 панель в event-logger).
+const IS_TTY = !!process.stdout.isTTY;
+let currentOpensearchLogFile = null;
+const formatArgs = (args) => {
+  try {
+    if (!args || args.length === 0) return '';
+    return args.map((a) => (typeof a === 'string' ? a : util.inspect(a, { depth: 4, breakLength: 160 }))).join(' ');
+  } catch (e) {
+    return '';
+  }
+};
+const writeLogFile = (level, message, args) => {
+  try {
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const today = new Date().toISOString().split('T')[0];
+    const file = path.join(logDir, `opensearch-${today}.log`);
+    if (currentOpensearchLogFile !== file) currentOpensearchLogFile = file;
+    const ts = new Date().toISOString();
+    const extra = formatArgs(args);
+    fs.appendFileSync(currentOpensearchLogFile, `[${ts}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`, 'utf8');
+  } catch (e) {
+    // ignore
+  }
+};
+const osLog = (message, ...args) => {
+  if (IS_TTY) return writeLogFile('INFO', message, args);
+  console.log(message, ...args);
+};
+const osWarn = (message, ...args) => {
+  if (IS_TTY) return writeLogFile('WARN', message, args);
+  console.warn(message, ...args);
+};
+const osError = (message, ...args) => {
+  if (IS_TTY) return writeLogFile('ERROR', message, args);
+  console.error(message, ...args);
+};
 
 // Конфигурация OpenSearch
 const OPENSEARCH_ENABLED = process.env.OPENSEARCH_ENABLED === 'true';
@@ -31,16 +71,16 @@ const getHttpsAgent = () => {
       ca: ca,
       rejectUnauthorized: true
     });
-    console.log(`[opensearch] Используется CA сертификат: ${OPENSEARCH_CA_CERT}`);
+    osLog(`[opensearch] Используется CA сертификат: ${OPENSEARCH_CA_CERT}`);
   } else {
     // Если сертификат не найден, используем стандартный agent (для тестирования)
     // ⚠️ ВНИМАНИЕ: В продакшене должен быть установлен сертификат!
     httpsAgent = new https.Agent({
       rejectUnauthorized: false // ⚠️ Только для разработки, в продакшене должен быть true
     });
-    console.warn(`[opensearch] ⚠️ CA сертификат не найден: ${OPENSEARCH_CA_CERT}`);
-    console.warn(`[opensearch] ⚠️ Используется insecure режим (rejectUnauthorized=false)`);
-    console.warn(`[opensearch] ⚠️ Для продакшена выполните: ./scripts/install_opensearch_cert.sh`);
+    osWarn(`[opensearch] ⚠️ CA сертификат не найден: ${OPENSEARCH_CA_CERT}`);
+    osWarn(`[opensearch] ⚠️ Используется insecure режим (rejectUnauthorized=false)`);
+    osWarn(`[opensearch] ⚠️ Для продакшена выполните: ./scripts/install_opensearch_cert.sh`);
   }
   
   return httpsAgent;
@@ -311,9 +351,9 @@ const ensureIndexMapping = async (indexName) => {
       
       if (!createResponse.ok) {
         const errorText = await createResponse.text();
-        console.error(`[opensearch] Ошибка создания индекса ${indexName}:`, errorText);
+        osError(`[opensearch] Ошибка создания индекса ${indexName}:`, errorText);
       } else {
-        console.log(`[opensearch] Индекс ${indexName} создан`);
+        osLog(`[opensearch] Индекс ${indexName} создан`);
       }
     } else {
       // Индекс существует - добавляем только недостающие поля по одному
@@ -376,7 +416,7 @@ const ensureIndexMapping = async (indexName) => {
       // Новые индексы будут создаваться с правильным маппингом extra автоматически
     }
   } catch (err) {
-    console.error(`[opensearch] Ошибка проверки/создания индекса ${indexName}:`, err.message);
+    osError(`[opensearch] Ошибка проверки/создания индекса ${indexName}:`, err.message);
   }
 };
 
@@ -387,8 +427,8 @@ const sendBatch = async (events, retryAttempt = 0) => {
   // Если превышено максимальное количество попыток
   if (retryAttempt >= BACKOFF_MAX_ATTEMPTS) {
     const droppedCount = events.length;
-    console.error(`[opensearch] Превышено максимальное количество попыток (${BACKOFF_MAX_ATTEMPTS}), отброшено ${droppedCount} событий`);
-    console.error(`[opensearch] Последняя ошибка:`, retryState.lastError?.message || 'unknown');
+    osError(`[opensearch] Превышено максимальное количество попыток (${BACKOFF_MAX_ATTEMPTS}), отброшено ${droppedCount} событий`);
+    osError(`[opensearch] Последняя ошибка:`, retryState.lastError?.message || 'unknown');
     
     // Сбросить флаг через 5 минут для новой попытки с новыми событиями
     if (!retryState.recoveryScheduled) {
@@ -398,7 +438,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
         retryState.attemptNumber = 0;
         retryState.isRetrying = false;
         retryState.recoveryScheduled = false;
-        console.log(`[opensearch] ð Сброс флага доступности после таймаута, новые события будут отправляться`);
+        osLog(`[opensearch] 🔄 Сброс флага доступности после таймаута, новые события будут отправляться`);
       }, 5 * 60 * 1000); // 5 минут
     }
     return;
@@ -467,7 +507,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
       if (result.errors) {
         const errors = result.items.filter(item => item.index && item.index.error);
         if (errors.length > 0) {
-          console.error(`[opensearch] Ошибки при индексации ${errors.length} событий:`, 
+          osError(`[opensearch] Ошибки при индексации ${errors.length} событий:`, 
             errors.slice(0, 3).map(e => e.index.error.reason));
         }
       }
@@ -475,7 +515,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
       // При успехе - сброс состояния повторных попыток
       if (retryAttempt > 0) {
         const recoveryTime = retryState.lastErrorTime ? Date.now() - retryState.lastErrorTime : 0;
-        console.log(`[opensearch] ✅ Успешная отправка после ${retryAttempt} попыток (время восстановления: ${(recoveryTime/1000).toFixed(1)}s)`);
+        osLog(`[opensearch] ✅ Успешная отправка после ${retryAttempt} попыток (время восстановления: ${(recoveryTime/1000).toFixed(1)}s)`);
       }
       
       retryState.attemptNumber = 0;
@@ -487,7 +527,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
       
       // Если были failed события - логировать успешное восстановление
       if (opensearchFailedBatch.length > 0) {
-        console.log(`[opensearch] Recovered ${opensearchFailedBatch.length} failed events`);
+        osLog(`[opensearch] Recovered ${opensearchFailedBatch.length} failed events`);
         opensearchFailedBatch = [];
       }
       
@@ -496,12 +536,12 @@ const sendBatch = async (events, retryAttempt = 0) => {
       const isRetryable = isRetryableError(err);
       
       if (!isRetryable) {
-        console.error(`[opensearch] ❌ Non-retryable ошибка (не будет повторных попыток):`, err.message);
+        osError(`[opensearch] ❌ Non-retryable ошибка (не будет повторных попыток):`, err.message);
         if (err.status) {
-          console.error(`[opensearch] HTTP статус: ${err.status}`);
+          osError(`[opensearch] HTTP статус: ${err.status}`);
         }
         if (err.code) {
-          console.error(`[opensearch] Код ошибки: ${err.code}`);
+          osError(`[opensearch] Код ошибки: ${err.code}`);
         }
         // Не повторяем для non-retryable ошибок
         return;
@@ -518,14 +558,14 @@ const sendBatch = async (events, retryAttempt = 0) => {
       const delay = calculateBackoffDelay(retryAttempt);
       retryState.nextRetryTime = Date.now() + delay;
       
-      console.warn(`[opensearch] ⚠️ Ошибка отправки (попытка ${retryState.attemptNumber}/${BACKOFF_MAX_ATTEMPTS}):`, err.message);
+      osWarn(`[opensearch] ⚠️ Ошибка отправки (попытка ${retryState.attemptNumber}/${BACKOFF_MAX_ATTEMPTS}):`, err.message);
       if (err.code) {
-        console.warn(`[opensearch] Код ошибки: ${err.code}`);
+        osWarn(`[opensearch] Код ошибки: ${err.code}`);
       }
       if (err.status) {
-        console.warn(`[opensearch] HTTP статус: ${err.status}`);
+        osWarn(`[opensearch] HTTP статус: ${err.status}`);
       }
-      console.warn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
+      osWarn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
       
       // Добавить события в резервное хранилище
       opensearchFailedBatch.push(...dateEvents);
@@ -534,7 +574,7 @@ const sendBatch = async (events, retryAttempt = 0) => {
       if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
         const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
         opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
-        console.error(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
+        osError(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
       }
       
       // Планирование повторной попытки с экспоненциальным backoff
@@ -586,7 +626,7 @@ const checkAvailability = async () => {
         retryState.attemptNumber = 0;
         retryState.isRetrying = false;
         retryState.recoveryScheduled = false;
-        console.log('[opensearch] ✅ OpenSearch снова доступен, новые события будут отправляться');
+        osLog('[opensearch] ✅ OpenSearch снова доступен, новые события будут отправляться');
         
         // Попытаться отправить накопленные события
         if (opensearchFailedBatch.length > 0) {
@@ -615,9 +655,9 @@ if (OPENSEARCH_ENABLED && OPENSEARCH_URL) {
   // Периодическая проверка доступности OpenSearch (раз в 5 минут)
   setInterval(checkAvailability, 5 * 60 * 1000);
   
-  console.log(`[opensearch] OpenSearch интеграция включена: ${OPENSEARCH_URL}`);
+  osLog(`[opensearch] OpenSearch интеграция включена: ${OPENSEARCH_URL}`);
 } else {
-  console.log('[opensearch] OpenSearch интеграция отключена (OPENSEARCH_ENABLED=false или OPENSEARCH_URL не задан)');
+  osLog('[opensearch] OpenSearch интеграция отключена (OPENSEARCH_ENABLED=false или OPENSEARCH_URL не задан)');
 }
 
 module.exports = {
