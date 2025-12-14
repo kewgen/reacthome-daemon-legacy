@@ -362,6 +362,9 @@ const traceIdBaseTimestampCache = new Map(); // trace_id -> baseTimestamp
 // 2.2. Счетчик устройств для каждого trace_id
 // Зачем: инкремент timestamp для каждого устройства в цепочке, чтобы они были после скрипта
 const traceIdDeviceCounterCache = new Map(); // trace_id -> counter
+// 2.3. Счетчик синтетических событий скриптов для каждого trace_id
+// Зачем: глобальный счетчик для всех синтетических событий скриптов в цепочке, чтобы они имели уникальные timestamp
+const traceIdScriptCounterCache = new Map(); // trace_id -> counter
 
 // 3. Кэш последних событий для анализа временных паттернов
 // Зачем: связывание событий по времени для построения трассировки без _context
@@ -1092,15 +1095,15 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp, visited = null)
     }
   }
   
-  // 5. Генерируем синтетическое событие executed
-  generateSyntheticScriptEvent(scriptId, timestamp, trace_id);
-  
   // Зачем: сохраняем базовый timestamp для trace_id скрипта
   // чтобы устройства использовали правильную последовательность
   const existingBaseTimestamp = traceIdBaseTimestampCache.get(trace_id);
   if (!existingBaseTimestamp || timestamp < existingBaseTimestamp) {
     traceIdBaseTimestampCache.set(trace_id, timestamp);
   }
+  
+  // 5. Генерируем синтетическое событие executed
+  generateSyntheticScriptEvent(scriptId, timestamp, trace_id);
   
   // 6. Отмечаем что синтетическое событие отправлено
   const cached = scriptExecutionCache.get(scriptId);
@@ -1146,10 +1149,6 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
   // это новый независимый запуск (иначе "инициатор" не попадёт в цепочку).
   const inheritedTraceId = traceIdCache.get(deviceId);
   
-  // Зачем: счетчик для инкремента timestamp каждого синтетического события скрипта
-  // чтобы события имели разные timestamp даже при одновременной генерации
-  let scriptEventCounter = 0;
-  
   for (const scriptId of scripts) {
     // Зачем: защита от циклов в графе скриптов (A -> B -> A)
     if (visitedSet.has(scriptId)) continue;
@@ -1175,10 +1174,25 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
     
     if (isNewExecution) {
       // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
-      // Зачем: увеличиваем timestamp на счетчик, чтобы каждое синтетическое событие имело уникальный timestamp
-      const scriptTimestamp = timestamp - scriptEventCounter;
+      // Зачем: используем глобальный счетчик для trace_id, чтобы все синтетические события скриптов в цепочке имели уникальные timestamp
+      // Определяем trace_id заранее (используем inheritedTraceId или генерируем новый)
+      const traceIdForCounter = inheritedTraceId || traceIdCache.get(deviceId) || uuidv4();
+      
+      // Инкрементируем счетчик для этого trace_id (глобальный счетчик для всей цепочки)
+      const scriptCounter = (traceIdScriptCounterCache.get(traceIdForCounter) || 0) + 1;
+      traceIdScriptCounterCache.set(traceIdForCounter, scriptCounter);
+      
+      // Уменьшаем timestamp на счетчик, чтобы скрипты были раньше устройств и имели уникальные timestamp
+      const scriptTimestamp = timestamp - scriptCounter;
       handleNewScriptExecution(scriptId, deviceId, scriptTimestamp, visitedSet);
-      scriptEventCounter++;
+      
+      // Обновляем счетчик для реального trace_id после его определения (если он отличается)
+      const actualTraceId = traceIdCache.get(scriptId);
+      if (actualTraceId && actualTraceId !== traceIdForCounter) {
+        // Переносим счетчик на реальный trace_id (используем максимальный счетчик)
+        const existingCounter = traceIdScriptCounterCache.get(actualTraceId) || 0;
+        traceIdScriptCounterCache.set(actualTraceId, Math.max(existingCounter, scriptCounter));
+      }
     } else {
       // ⏳ Продолжение работы скрипта
       handleContinuingScriptExecution(scriptId, deviceId, cached);
