@@ -798,9 +798,14 @@ const generateSyntheticScriptEvent = (scriptId, timestamp, trace_id) => {
 
 // Обработка нового запуска скрипта
 // Зачем: создание trace_id и синтетического события когда скрипт только что запустился
-const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
-  // 1. Генерируем trace_id для цепочки
-  const trace_id = uuidv4();
+const handleNewScriptExecution = (scriptId, deviceId, timestamp, visited = null) => {
+  // 1. Определяем trace_id для цепочки
+  // Зачем: если запуск скрипта выведен из уже связанного события (deviceId уже имеет trace_id),
+  // то наследуем trace_id, чтобы цепочка не рвалась (например: Start -> Скрипт B -> устройство).
+  const inheritedTraceId = traceIdCache.get(deviceId);
+  const trace_id = (typeof inheritedTraceId === 'string' && inheritedTraceId.length > 0)
+    ? inheritedTraceId
+    : uuidv4();
   
   // 2. Получаем целевые устройства скрипта
   const targetDevices = getScriptTargetDevices(scriptId);
@@ -814,7 +819,9 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
     targetDevices: targetDevices
   });
   
-  // 4. Сохраняем trace_id для всех целевых устройств
+  // 4. Сохраняем trace_id для самого скрипта и всех целевых устройств
+  // Зачем: скрипт должен быть участником цепочки, чтобы по нему можно было строить "скрипт -> скрипт"
+  traceIdCache.set(scriptId, trace_id);
   for (const devId of targetDevices) {
     traceIdCache.set(devId, trace_id);
   }
@@ -828,7 +835,17 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
     cached.syntheticEventSent = true;
   }
   
-  log(`📋 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} запущен (выведено), trace_id=${trace_id.slice(0,8)}, целевых устройств: ${targetDevices.size}`);
+  if (typeof inheritedTraceId === 'string' && inheritedTraceId.length > 0) {
+    log(`🔗 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} унаследовал trace_id=${trace_id.slice(0,8)} от источника ${String(deviceId).slice(0,8)} (целевых устройств: ${targetDevices.size})`);
+  } else {
+    log(`📋 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} запущен (выведено), trace_id=${trace_id.slice(0,8)}, целевых устройств: ${targetDevices.size}`);
+  }
+
+  // 7. Прокидываем "изменение" на уровень выше: скрипт как узел графа
+  // Зачем: если scriptId является целевым для другого скрипта (ACTION_SCRIPT_RUN), то хотим вывести и родителя.
+  const nextVisited = visited instanceof Set ? visited : new Set();
+  nextVisited.add(scriptId);
+  checkAndGenerateScriptEvent(scriptId, timestamp, nextVisited);
 };
 
 // Обработка продолжения работы скрипта
@@ -847,11 +864,17 @@ const handleContinuingScriptExecution = (scriptId, deviceId, cached) => {
 
 // Проверка и генерация синтетических событий для скриптов
 // Зачем: определение запущенных скриптов по изменениям устройств и генерация синтетических событий
-const checkAndGenerateScriptEvent = (deviceId, timestamp) => {
+const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
   const scripts = findScriptsContainingDevice(deviceId);
   if (scripts.length === 0) return;
+
+  const visitedSet = visited instanceof Set ? visited : new Set();
   
   for (const scriptId of scripts) {
+    // Зачем: защита от циклов в графе скриптов (A -> B -> A)
+    if (visitedSet.has(scriptId)) continue;
+    visitedSet.add(scriptId);
+
     const cached = scriptExecutionCache.get(scriptId);
     const timeSinceLastChange = cached 
       ? (timestamp - cached.firstChangeTimestamp) 
@@ -864,7 +887,7 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp) => {
     
     if (isNewExecution) {
       // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
-      handleNewScriptExecution(scriptId, deviceId, timestamp);
+      handleNewScriptExecution(scriptId, deviceId, timestamp, visitedSet);
     } else {
       // ⏳ Продолжение работы скрипта
       handleContinuingScriptExecution(scriptId, deviceId, cached);
@@ -1050,27 +1073,44 @@ const generateTraceId = (id, context, param) => {
   
   // Если это событие скрипта (executed/last_execution)
   if (dbContext.isScriptEvent && dbContext.targetDevices) {
-    // Генерируем новый trace_id для цепочки скрипта
-    const newTraceId = uuidv4();
+    // Зачем: если скрипт запущен другим скриптом, наследуем trace_id родителя,
+    // чтобы цепочка выглядела как Start -> Скрипт B -> ... и не рвалась на отдельные trace_id.
+    let inherited = null;
+    for (const [parentScriptId, parent] of activeScriptsCache.entries()) {
+      const withinWindow = parent?.timestamp && (now - parent.timestamp) <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC;
+      const isChild = parent?.actionDevices && parent.actionDevices.has(id);
+      if (withinWindow && isChild) {
+        if (!inherited || parent.timestamp > inherited.timestamp) {
+          inherited = { parentScriptId, timestamp: parent.timestamp, trace_id: parent.trace_id };
+        }
+      }
+    }
+
+    // Генерируем новый trace_id только если нет родительской цепочки
+    const traceIdToUse = inherited?.trace_id || uuidv4();
     
     // Зачем: сохраняем скрипт в кэше активных скриптов
     activeScriptsCache.set(id, {
       timestamp: now,
-      trace_id: newTraceId,
+      trace_id: traceIdToUse,
       actionDevices: dbContext.targetDevices
     });
     
     // Зачем: сохраняем trace_id для всех целевых устройств скрипта
-    traceIdCache.set(id, newTraceId);
+    traceIdCache.set(id, traceIdToUse);
     for (const deviceId of dbContext.targetDevices) {
-      traceIdCache.set(deviceId, newTraceId);
+      traceIdCache.set(deviceId, traceIdToUse);
     }
     
-    recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: 'script' });
+    recentEventsCache.set(id, { timestamp: now, trace_id: traceIdToUse, type: 'script' });
     
-    log(`📋 Скрипт ${id} запущен, trace_id=${newTraceId.slice(0,8)}, целевых устройств: ${dbContext.targetDevices.size}`);
+    if (inherited?.parentScriptId) {
+      log(`🔗 Скрипт ${id} унаследовал trace_id=${traceIdToUse.slice(0,8)} от родителя ${inherited.parentScriptId.slice(0,8)} (целевых устройств: ${dbContext.targetDevices.size})`);
+    } else {
+      log(`📋 Скрипт ${id} запущен, trace_id=${traceIdToUse.slice(0,8)}, целевых устройств: ${dbContext.targetDevices.size}`);
+    }
     
-    return newTraceId;
+    return traceIdToUse;
   }
   
   // Если контекст не был передан, но мы определили его из БД - обновляем
@@ -1283,9 +1323,14 @@ const handleActionSet = (message, wsMeta = null) => {
     // Зачем: храним только поля, используемые для сравнения, а не весь объект состояния
     const essentialFields = {};
     // Копируем только нужные поля из oldState
-    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
-                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
-                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
+                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
+                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                          // Зачем: эти поля нужны для трассировки и построения device -> scripts индекса
+                          // (иначе скрипты/действия теряются и цепочки рвутся)
+                          'action', 'payload', 'ref', 'id', 'schedule', 'timer', 'duration', 'group',
+                          // Зачем: нужно для распаковки site в getScriptTargetDevices (site.device/do/dim)
+                          'device', 'do', 'dim'];
     for (const field of fieldsToKeep) {
       if (oldState[field] !== undefined) {
         essentialFields[field] = oldState[field];
@@ -1877,9 +1922,10 @@ const addToBuffer = (event) => {
   
   // Если буфер переполнен, удаляем старые события
   if (eventBuffer.length > BUFFER_MAX_SIZE) {
-    const removed = eventBuffer.shift();
+    eventBuffer.shift();
     stats.dropped++;
-    logError(`Буфер переполнен, удалено старое событие: ${removed?.id || 'unknown'}/${removed?.param || 'unknown'}`);
+    // Зачем: не спамим ERROR-логами при переполнении. Метрика отображается в 📊 панели (d: dropped),
+    // а подробные записи о каждом удалённом событии тут только мешают анализу.
   }
 };
 
@@ -2107,9 +2153,13 @@ const connect = () => {
             if (id && payload && typeof payload === 'object') {
               // Зачем: при начальной загрузке payload - это полное состояние, но храним только нужные поля
               const essentialFields = {};
-              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
-                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
-                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
+                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
+                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                                    // Зачем: эти поля нужны для трассировки и построения device -> scripts индекса
+                                    'action', 'payload', 'ref', 'id', 'schedule', 'timer', 'duration', 'group',
+                                    // Зачем: нужно для распаковки site в getScriptTargetDevices (site.device/do/dim)
+                                    'device', 'do', 'dim'];
               for (const field of fieldsToKeep) {
                 if (payload[field] !== undefined) {
                   essentialFields[field] = payload[field];
