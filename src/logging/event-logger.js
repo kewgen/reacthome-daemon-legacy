@@ -356,6 +356,13 @@ const channelStateCache = new Map(); // endDevice.id -> { onTimestamp, channelId
 // Зачем: связывание событий в цепочки для анализа причинно-следственных связей
 const traceIdCache = new Map(); // id -> trace_id
 
+// 2.1. Кэш базовых timestamp для trace_id
+// Зачем: хранение базового timestamp для каждого trace_id, чтобы устройства использовали правильную последовательность
+const traceIdBaseTimestampCache = new Map(); // trace_id -> baseTimestamp
+// 2.2. Счетчик устройств для каждого trace_id
+// Зачем: инкремент timestamp для каждого устройства в цепочке, чтобы они были после скрипта
+const traceIdDeviceCounterCache = new Map(); // trace_id -> counter
+
 // 3. Кэш последних событий для анализа временных паттернов
 // Зачем: связывание событий по времени для построения трассировки без _context
 const recentEventsCache = new Map(); // id -> { timestamp, trace_id, type }
@@ -1088,6 +1095,13 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp, visited = null)
   // 5. Генерируем синтетическое событие executed
   generateSyntheticScriptEvent(scriptId, timestamp, trace_id);
   
+  // Зачем: сохраняем базовый timestamp для trace_id скрипта
+  // чтобы устройства использовали правильную последовательность
+  const existingBaseTimestamp = traceIdBaseTimestampCache.get(trace_id);
+  if (!existingBaseTimestamp || timestamp < existingBaseTimestamp) {
+    traceIdBaseTimestampCache.set(trace_id, timestamp);
+  }
+  
   // 6. Отмечаем что синтетическое событие отправлено
   const cached = scriptExecutionCache.get(scriptId);
   if (cached) {
@@ -1801,6 +1815,16 @@ const handleActionSet = (message, wsMeta = null) => {
     // чтобы оно было раньше событий от устройств (которые используют timestamp из payload)
     const baseTimestamp = payload.timestamp || Date.now();
     const scriptTimestamp = baseTimestamp - 1; // Скрипт на 1ms раньше устройств
+    
+    // Зачем: сохраняем базовый timestamp для trace_id, чтобы устройства использовали правильную последовательность
+    if (context.trace_id) {
+      const existingBaseTimestamp = traceIdBaseTimestampCache.get(context.trace_id);
+      // Используем минимальный timestamp среди всех событий в цепочке
+      if (!existingBaseTimestamp || baseTimestamp < existingBaseTimestamp) {
+        traceIdBaseTimestampCache.set(context.trace_id, baseTimestamp);
+      }
+    }
+    
     checkAndGenerateScriptEvent(id, scriptTimestamp);
     
     // Обрабатываем событие (используем логику из event-log.js)
@@ -1821,11 +1845,23 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
   // Зачем: используем timestamp из payload (если есть), чтобы дедупликация работала стабильно.
   // Иначе Date.now() даёт разные значения на повторных сообщениях (1-2мс), и получаем "дубли" в OpenSearch и consumer-логах.
   // Зачем: если передан baseTimestamp, используем его (для правильной последовательности: скрипт на 1ms раньше устройств)
-  const eventTimestamp = baseTimestamp !== null
-    ? baseTimestamp
-    : ((typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
+  // Зачем: если устройство связано со скриптом через trace_id, используем базовый timestamp из кэша + инкремент для правильной последовательности
+  let eventTimestamp;
+  if (baseTimestamp !== null) {
+    eventTimestamp = baseTimestamp;
+  } else if (context.trace_id && traceIdBaseTimestampCache.has(context.trace_id)) {
+    // Устройство связано со скриптом - используем базовый timestamp из кэша + инкремент
+    const traceBaseTimestamp = traceIdBaseTimestampCache.get(context.trace_id);
+    // Инкрементируем счетчик устройств для этого trace_id
+    const deviceCounter = (traceIdDeviceCounterCache.get(context.trace_id) || 0) + 1;
+    traceIdDeviceCounterCache.set(context.trace_id, deviceCounter);
+    // Устройства должны быть после скрипта (скрипт имеет timestamp-1ms, устройства имеют timestamp+0ms, +1ms, +2ms...)
+    eventTimestamp = traceBaseTimestamp + deviceCounter;
+  } else {
+    eventTimestamp = (typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
       ? newState.timestamp
-      : Date.now());
+      : Date.now();
+  }
   
   // Если передан changedPayload, логируем только параметры из payload
   const paramsToCheck = changedPayload ? Object.keys(changedPayload) : null;
