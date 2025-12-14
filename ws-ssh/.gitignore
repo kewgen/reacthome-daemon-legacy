@@ -1,0 +1,6 @@
+node_modules/
+npm-debug.log
+.DS_Store
+*.log
+# Зачем: исключаем локальные бэкапы из коммита, они должны храниться в проектной папке backups
+backups/
