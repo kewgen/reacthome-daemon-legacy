@@ -1175,7 +1175,13 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
         cached.trace_id.length > 0 &&
         cached.trace_id !== inheritedTraceId);
     
-    if (isNewExecution) {
+    // Зачем: проверяем, не было ли уже создано синтетическое событие для этого скрипта с тем же trace_id
+    // чтобы избежать дубликатов при рекурсивных вызовах checkAndGenerateScriptEvent
+    const alreadyHasSyntheticEvent = cached && 
+      cached.syntheticEventSent && 
+      cached.trace_id === (inheritedTraceId || traceIdCache.get(deviceId));
+    
+    if (isNewExecution && !alreadyHasSyntheticEvent) {
       // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
       // Зачем: используем глобальный счетчик для trace_id, чтобы все синтетические события скриптов в цепочке имели уникальные timestamp
       // Определяем trace_id заранее (используем inheritedTraceId или генерируем новый)
