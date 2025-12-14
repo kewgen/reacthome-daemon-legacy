@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.38 (ручное управление версией)
+ * Версия: 1.0.41 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.38';
+const VERSION = '1.0.41';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1408,6 +1408,41 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
             type: deviceType,
             typeName: 'LEAKAGE_SENSOR',
             category: 'Сенсор',
+            siteId: siteId || null,
+            site: siteName || null,
+            bind: payload.bind || null,
+          });
+          
+          addedDeviceIds.add(deviceId);
+          processedDeviceIds.add(deviceId);
+        }
+        
+        // Обрабатываем тип "daemon" отдельно (системное устройство)
+        // Зачем: Устройства типа "daemon" не входят в CONSUMER_TYPES, поэтому обрабатываем отдельно
+        if ((deviceType === 'daemon' || deviceType === 'DAEMON') && !addedDeviceIds.has(deviceId)) {
+          let siteId = payload.site;
+          let siteName = null;
+          
+          if (siteId) {
+            if (Array.isArray(siteId)) {
+              siteId = siteId[0];
+            }
+            if (typeof siteId === 'string') {
+              siteName = siteMap.get(siteId) || null;
+            }
+          }
+          
+          const deviceName = getDeviceName(payload);
+          
+          devices.push({
+            id: deviceId,
+            name: deviceName,
+            title: payload.title || null,
+            code: payload.code || null,
+            nameField: payload.name || null,
+            type: deviceType,
+            typeName: 'DAEMON',
+            category: 'Система',
             siteId: siteId || null,
             site: siteName || null,
             bind: payload.bind || null,
@@ -2563,10 +2598,20 @@ class TerminalKitStatusDisplay {
     const status = this.isConnected ? '🟢 ПОДКЛЮЧЕНО' : '🔴 ОТКЛЮЧЕНО';
     const time = new Date().toLocaleTimeString('ru-RU');
     
-    // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый)
+    // Зачем: Находим устройство типа "daemon" для вывода его id
+    // Проверяем как строковый тип "daemon", так и числовой (если есть)
+    const daemonDevice = this.allDevices.find(d => {
+      const type = d.type;
+      return (typeof type === 'string' && (type === 'daemon' || type === 'DAEMON')) ||
+             (typeof type === 'number' && d.typeName && d.typeName.toLowerCase().includes('daemon'));
+    });
+    const daemonId = daemonDevice ? daemonDevice.id : null;
+    
+    // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый) и duid
     const headerPrefix = `${this.locationName} | ${status} | ${time} | v`;
     const versionText = this.version;
-    const headerText = headerPrefix + versionText;
+    const duidText = daemonId ? ` ${daemonId}` : '';
+    const headerText = headerPrefix + versionText + duidText;
     
     // Обновляем заголовок только если он изменился (экономим escape-последовательности)
     if (this.lastHeaderText !== headerText) {
@@ -2583,6 +2628,11 @@ class TerminalKitStatusDisplay {
         term.bold.yellow(versionText); // Жёлтый - есть обновление
       } else {
         term.bold.green(versionText); // Зелёный - версия актуальна
+      }
+      
+      // Выводим duid устройства daemon
+      if (daemonId) {
+        term.bold.cyan(duidText);
       }
       
       term(' '.repeat(this.width - headerText.length));
