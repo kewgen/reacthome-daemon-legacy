@@ -1769,6 +1769,14 @@ const handleActionSet = (message, wsMeta = null) => {
         traceIdCache.delete(id);
         // Также очищаем из recentEventsCache
         recentEventsCache.delete(id);
+        // Зачем: очищаем trace_id из scriptExecutionCache, если устройство связано со скриптом
+        // иначе generateTraceId может найти старый trace_id через scriptExecutionCache
+        for (const [scriptId, cached] of scriptExecutionCache.entries()) {
+          if (cached.targetDevices && cached.targetDevices.has(id)) {
+            // Удаляем устройство из targetDevices скрипта, чтобы оно не наследовало trace_id
+            cached.targetDevices.delete(id);
+          }
+        }
         log(`🔄 [TRACE] Выключение потребителя ${id.slice(0,8)} после ${Math.round(actuatorStateInfo.duration/1000)}с - новый trace_id для отдельного цикла`);
       }
     }
