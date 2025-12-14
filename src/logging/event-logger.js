@@ -1753,6 +1753,26 @@ const handleActionSet = (message, wsMeta = null) => {
       remote_ip: null
     };
     
+    // Зачем: если это выключение потребителя через длительное время (> 5 секунд), генерируем новый trace_id
+    // чтобы разделить разные циклы работы устройства (включение и выключение - разные цепочки)
+    const CONSUMER_OFF_CYCLE_THRESHOLD_MS = 5000; // 5 секунд - порог для разделения циклов
+    if (actuatorStateInfo && actuatorStateInfo.type === 'off' && actuatorStateInfo.duration > CONSUMER_OFF_CYCLE_THRESHOLD_MS) {
+      // Проверяем, является ли устройство потребителем
+      const deviceType = getDeviceTypeWithFallback(id);
+      const isConsumer = isConsumerDevice(deviceType);
+      
+      if (isConsumer) {
+        // Это выключение потребителя после длительной работы - отдельный цикл, нужен новый trace_id
+        // Очищаем trace_id из контекста, чтобы generateTraceId создал новый
+        context.trace_id = null;
+        // Очищаем trace_id из кэша для этого устройства, чтобы не наследовать старый
+        traceIdCache.delete(id);
+        // Также очищаем из recentEventsCache
+        recentEventsCache.delete(id);
+        log(`🔄 [TRACE] Выключение потребителя ${id.slice(0,8)} после ${Math.round(actuatorStateInfo.duration/1000)}с - новый trace_id для отдельного цикла`);
+      }
+    }
+    
     // 3. Генерируем trace_id для трассировки
     // Зачем: определяем ключевой параметр для анализа (executed, last_execution или другой)
     const keyParam = payload.executed !== undefined ? 'executed' : 
