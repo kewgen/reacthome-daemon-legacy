@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.42 (ручное управление версией)
+ * Версия: 1.0.43 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.42';
+const VERSION = '1.0.43';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1633,8 +1633,14 @@ function copyToClipboard(text) {
     return;
   }
   
-  copyProcess.stdin.write(text);
+  // Зачем: Записываем текст и корректно закрываем stdin, чтобы процесс завершился и данные попали в буфер
+  copyProcess.stdin.write(text, 'utf8');
   copyProcess.stdin.end();
+  
+  // Зачем: Обрабатываем ошибки записи в stdin (EPIPE - нормально при закрытии)
+  copyProcess.stdin.on('error', () => {
+    // Игнорируем ошибки закрытия stdin (EPIPE), это нормально
+  });
   
   copyProcess.on('close', (code) => {
     if (code === 0 || isLinux) {
@@ -4882,14 +4888,12 @@ class TerminalKitStatusDisplay {
     const device = this.devices[this.selectedIndex];
     if (!device) return;
     
-    // Используем сохраненный текст для копирования или формируем заново
-    let textToCopy = this.devicePopupText;
+    // Зачем: Всегда генерируем свежий текст для копирования, чтобы избежать устаревших данных
+    const deviceInfoContent = this.getDeviceInfoText(device);
+    if (!deviceInfoContent) return;
     
-    if (!textToCopy) {
-      textToCopy = this.getDeviceInfoText(device);
-    }
-    
-    if (!textToCopy) return;
+    // Зачем: Убираем форматирование и служебные маркеры для чистого текста в буфере
+    const textToCopy = deviceInfoContent.replace(/__DEVICE_TITLE__/g, '').replace(/__GREEN_VALUE__/g, '');
     
     copyToClipboard(textToCopy);
     
