@@ -1132,6 +1132,10 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
   // это новый независимый запуск (иначе "инициатор" не попадёт в цепочку).
   const inheritedTraceId = traceIdCache.get(deviceId);
   
+  // Зачем: счетчик для инкремента timestamp каждого синтетического события скрипта
+  // чтобы события имели разные timestamp даже при одновременной генерации
+  let scriptEventCounter = 0;
+  
   for (const scriptId of scripts) {
     // Зачем: защита от циклов в графе скриптов (A -> B -> A)
     if (visitedSet.has(scriptId)) continue;
@@ -1157,7 +1161,10 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, visited = null) => {
     
     if (isNewExecution) {
       // ✅ ЭТО НОВЫЙ ЗАПУСК СКРИПТА!
-      handleNewScriptExecution(scriptId, deviceId, timestamp, visitedSet);
+      // Зачем: увеличиваем timestamp на счетчик, чтобы каждое синтетическое событие имело уникальный timestamp
+      const scriptTimestamp = timestamp - scriptEventCounter;
+      handleNewScriptExecution(scriptId, deviceId, scriptTimestamp, visitedSet);
+      scriptEventCounter++;
     } else {
       // ⏳ Продолжение работы скрипта
       handleContinuingScriptExecution(scriptId, deviceId, cached);
