@@ -1722,9 +1722,10 @@ const handleActionSet = (message, wsMeta = null) => {
     // чтобы timestamp был правильным и отражал последовательность: schedule -> скрипт -> устройства
     const role = getDeviceRole(id);
     if (role === 'schedule' && context.trace_id) {
-      // Зачем: уменьшаем timestamp на 1ms, чтобы schedule был гарантированно раньше событий скрипта
+      // Зачем: уменьшаем timestamp на 2ms для schedule, чтобы последовательность была:
+      // schedule (timestamp-2ms) -> скрипт (timestamp-1ms) -> устройства (timestamp)
       const baseTimestamp = payload.timestamp || Date.now();
-      const scheduleTimestamp = baseTimestamp - 1;
+      const scheduleTimestamp = baseTimestamp - 2;
       // Получаем данные устройства из state
       const deviceFields = getDeviceFields(id);
       const deviceName = deviceFields?.name ?? null;
@@ -1789,12 +1790,16 @@ const handleActionSet = (message, wsMeta = null) => {
     
     // Зачем: проверяем и генерируем синтетические события для скриптов
     // Делаем это ДО processEvent, чтобы синтетическое событие создалось первым
-    const timestamp = payload.timestamp || Date.now();
-    checkAndGenerateScriptEvent(id, timestamp);
+    // Зачем: уменьшаем timestamp на 1ms для синтетического события скрипта,
+    // чтобы оно было раньше событий от устройств (которые используют timestamp из payload)
+    const baseTimestamp = payload.timestamp || Date.now();
+    const scriptTimestamp = baseTimestamp - 1; // Скрипт на 1ms раньше устройств
+    checkAndGenerateScriptEvent(id, scriptTimestamp);
     
     // Обрабатываем событие (используем логику из event-log.js)
     // Зачем: передаем информацию о состоянии актуатора для обогащения событий
-    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo, wsMeta);
+    // Зачем: передаем baseTimestamp в processEvent, чтобы события от устройств использовали правильный timestamp
+    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo, wsMeta, baseTimestamp);
     
   } catch (error) {
     logError('Ошибка обработки ACTION_SET:', error.message, error.stack);
@@ -1803,14 +1808,17 @@ const handleActionSet = (message, wsMeta = null) => {
 
 // Обработка события (логика из event-log.js)
 // Зачем: обработка событий с обогащением информацией о включении/выключении устройств
-const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null, wsMeta = null) => {
+const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null, wsMeta = null, baseTimestamp = null) => {
   if (!id || !newState || typeof newState !== 'object') return;
 
   // Зачем: используем timestamp из payload (если есть), чтобы дедупликация работала стабильно.
   // Иначе Date.now() даёт разные значения на повторных сообщениях (1-2мс), и получаем "дубли" в OpenSearch и consumer-логах.
-  const eventTimestamp = (typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
-    ? newState.timestamp
-    : Date.now();
+  // Зачем: если передан baseTimestamp, используем его (для правильной последовательности: скрипт на 1ms раньше устройств)
+  const eventTimestamp = baseTimestamp !== null
+    ? baseTimestamp
+    : ((typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
+      ? newState.timestamp
+      : Date.now());
   
   // Если передан changedPayload, логируем только параметры из payload
   const paramsToCheck = changedPayload ? Object.keys(changedPayload) : null;
