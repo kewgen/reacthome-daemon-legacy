@@ -31,7 +31,7 @@ const bootLog = (line) => {
     const today = new Date().toISOString().split('T')[0];
     const file = path.join(logDir, `event-logger-interactive-${today}.log`);
     const ts = new Date().toISOString();
-    fs.appendFileSync(file, `[${ts}] [BOOT] ${line}\n`, 'utf8');
+    fs.appendFileSync(file, `[${ts}] [BOOT] [pid:${process.pid}] ${line}\n`, 'utf8');
   } catch (e) {}
 };
 
@@ -256,7 +256,11 @@ const writeInteractiveLog = (level, message, args) => {
     if (currentInteractiveLogFile !== file) currentInteractiveLogFile = file;
     const ts = new Date().toISOString();
     const extra = formatLogArgs(args);
-    fs.appendFileSync(currentInteractiveLogFile, `[${ts}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`, 'utf8');
+    fs.appendFileSync(
+      currentInteractiveLogFile,
+      `[${ts}] [pid:${process.pid}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`,
+      'utf8'
+    );
   } catch (e) {
     // Зачем: логирование не должно ломать основной поток
   }
@@ -370,7 +374,7 @@ const log = (message, ...args) => {
     return;
   }
   const timestamp = new Date().toISOString();
-  console.log(`[${timestamp}] [event-logger] ${message}`, ...args);
+  console.log(`[${timestamp}] [pid:${process.pid}] [event-logger] ${message}`, ...args);
 };
 
 const logError = (message, ...args) => {
@@ -380,7 +384,7 @@ const logError = (message, ...args) => {
     return;
   }
   const timestamp = new Date().toISOString();
-  console.error(`[${timestamp}] [event-logger] ERROR: ${message}`, ...args);
+  console.error(`[${timestamp}] [pid:${process.pid}] [event-logger] ERROR: ${message}`, ...args);
 };
 
 // ==========================
@@ -859,6 +863,22 @@ const getScriptTargetDevices = (scriptId) => {
   if (!script || !Array.isArray(script.action)) return new Set();
   
   const targetDevices = new Set();
+
+  // Зачем: единая точка добавления целевого ID + учёт bind-канала (для light_220 и др.)
+  // Это критично для скриптов, которые меняют "обёртку" устройства, но фактически меняется канал MAC/dim/x.
+  const addTarget = (id) => {
+    if (!id || typeof id !== 'string') return;
+    targetDevices.add(id);
+
+    // Если это устройство-обёртка с bind на канал, добавляем и канал как цель
+    const obj = state.get(id);
+    if (obj && typeof obj === 'object' && typeof obj.bind === 'string') {
+      const bindId = obj.bind;
+      if (isChannelId(bindId)) {
+        targetDevices.add(bindId);
+      }
+    }
+  };
   
   // Зачем: проходим по всем действиям скрипта и извлекаем ID целевых устройств
   for (const actionId of script.action) {
@@ -870,18 +890,31 @@ const getScriptTargetDevices = (scriptId) => {
     
     // Зачем: получаем ID целевого устройства из действия
     if (actionObj.id && typeof actionObj.id === 'string') {
-      targetDevices.add(actionObj.id);
+      addTarget(actionObj.id);
     }
     
     // Зачем: для некоторых действий целевое устройство в поле ref
     if (actionObj.ref && typeof actionObj.ref === 'string') {
-      targetDevices.add(actionObj.ref);
+      addTarget(actionObj.ref);
     }
     
     // Зачем: для ACTION_ON/OFF/TOGGLE целевое устройство в payload.id
     if (actionObj.payload && typeof actionObj.payload === 'object') {
       if (actionObj.payload.id && typeof actionObj.payload.id === 'string') {
-        targetDevices.add(actionObj.payload.id);
+        addTarget(actionObj.payload.id);
+      }
+
+      // Зачем: поддержка ACTION_TOGGLE (payload.onOn/onOff/test) — иначе не строится граф script -> script
+      if (actionObj.payload.onOn && typeof actionObj.payload.onOn === 'string') {
+        addTarget(actionObj.payload.onOn);
+      }
+      if (actionObj.payload.onOff && typeof actionObj.payload.onOff === 'string') {
+        addTarget(actionObj.payload.onOff);
+      }
+      if (Array.isArray(actionObj.payload.test)) {
+        for (const testId of actionObj.payload.test) {
+          if (typeof testId === 'string') addTarget(testId);
+        }
       }
     }
     
@@ -896,7 +929,7 @@ const getScriptTargetDevices = (scriptId) => {
             ...(siteObj.do || []),
             ...(siteObj.dim || [])
           ];
-          siteDevices.forEach(devId => targetDevices.add(devId));
+          siteDevices.forEach((devId) => addTarget(devId));
         }
       }
     }
@@ -1624,6 +1657,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     
     const event = {
       timestamp: eventTimestamp,
+      logger_pid: process.pid, // Зачем: диагностика дублей при нескольких запущенных процессах логгера
       id,
       device: {
         type: null,
@@ -1814,6 +1848,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     // Зачем: добавляем on_timestamp и duration на верхнем уровне события для удобства мониторинга
     const eventBase = {
       timestamp: eventTimestamp,
+      logger_pid: process.pid, // Зачем: диагностика дублей при нескольких запущенных процессах логгера
       id,
       device: {
         type: deviceTypeStr,

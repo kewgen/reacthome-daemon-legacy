@@ -26,7 +26,11 @@ const writeLogFile = (level, message, args) => {
     if (currentOpensearchLogFile !== file) currentOpensearchLogFile = file;
     const ts = new Date().toISOString();
     const extra = formatArgs(args);
-    fs.appendFileSync(currentOpensearchLogFile, `[${ts}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`, 'utf8');
+    fs.appendFileSync(
+      currentOpensearchLogFile,
+      `[${ts}] [pid:${process.pid}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`,
+      'utf8'
+    );
   } catch (e) {
     // ignore
   }
@@ -318,6 +322,7 @@ const ensureIndexMapping = async (indexName) => {
         mappings: {
           properties: {
             timestamp: { type: 'date' },
+            logger_pid: { type: 'long' }, // Зачем: идентификация источника дублей (несколько процессов логгера)
             id: { type: 'keyword' },
             device: {
               properties: {
@@ -480,6 +485,23 @@ const ensureIndexMapping = async (indexName) => {
           agent: getHttpsAgent()
         });
         // Зачем: не логируем - слишком частое событие, засоряет логи
+      } catch (err) {
+        // Игнорируем ошибки - поле может уже существовать
+      }
+
+      // Пробуем добавить logger_pid
+      try {
+        const pidField = { properties: { logger_pid: { type: 'long' } } };
+        const pidUrl = `${config.url}/${indexName}/_mapping`;
+        await fetch(pidUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${Buffer.from(`${config.user}:${config.password}`).toString('base64')}`
+          },
+          body: JSON.stringify(pidField),
+          agent: getHttpsAgent()
+        });
       } catch (err) {
         // Игнорируем ошибки - поле может уже существовать
       }
