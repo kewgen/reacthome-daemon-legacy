@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.41 (ручное управление версией)
+ * Версия: 1.0.42 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.41';
+const VERSION = '1.0.42';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -763,6 +763,7 @@ const checkForRemoteUpdateAndMaybeApply = async () => {
 const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
+const SHOW_DAEMON_DUID = process.env.MONITOR_SHOW_DAEMON_DUID === '1' || process.env.MONITOR_SHOW_DAEMON_DUID === 'true'; // Зачем: Флаг для отображения duid демона в заголовке (по умолчанию выключен)
 const WS_LOG_DIR = process.env.WS_LOG_DIR || path.join(process.cwd(), 'logs'); // Директория для логов WebSocket
 const WS_LOG_FILE_IN = path.join(WS_LOG_DIR, 'ws-in.log'); // Файл для входящих сообщений (ответы от сервера)
 const WS_LOG_FILE_OUT = path.join(WS_LOG_DIR, 'ws-out.log'); // Файл для исходящих сообщений (запросы к серверу)
@@ -2598,16 +2599,18 @@ class TerminalKitStatusDisplay {
     const status = this.isConnected ? '🟢 ПОДКЛЮЧЕНО' : '🔴 ОТКЛЮЧЕНО';
     const time = new Date().toLocaleTimeString('ru-RU');
     
-    // Зачем: Находим устройство типа "daemon" для вывода его id
-    // Проверяем как строковый тип "daemon", так и числовой (если есть)
-    const daemonDevice = this.allDevices.find(d => {
-      const type = d.type;
-      return (typeof type === 'string' && (type === 'daemon' || type === 'DAEMON')) ||
-             (typeof type === 'number' && d.typeName && d.typeName.toLowerCase().includes('daemon'));
-    });
-    const daemonId = daemonDevice ? daemonDevice.id : null;
+    // Зачем: Находим устройство типа "daemon" для вывода его id (только если включен флаг)
+    let daemonId = null;
+    if (SHOW_DAEMON_DUID) {
+      const daemonDevice = this.allDevices.find(d => {
+        const type = d.type;
+        return (typeof type === 'string' && (type === 'daemon' || type === 'DAEMON')) ||
+               (typeof type === 'number' && d.typeName && d.typeName.toLowerCase().includes('daemon'));
+      });
+      daemonId = daemonDevice ? daemonDevice.id : null;
+    }
     
-    // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый) и duid
+    // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый) и duid (если включен флаг)
     const headerPrefix = `${this.locationName} | ${status} | ${time} | v`;
     const versionText = this.version;
     const duidText = daemonId ? ` ${daemonId}` : '';
@@ -5176,22 +5179,22 @@ class TerminalKitStatusDisplay {
     const deviceType = payload.type;
     let device = null;
     
-      // Обрабатываем устройства с числовым типом
-      if (typeof deviceType === 'number' && deviceType !== 0x00) {
+    // Обрабатываем устройства с числовым типом
+    if (typeof deviceType === 'number' && deviceType !== 0x00) {
         // Для актуаторов site берется из WebSocket (payload.site или state.site)
         // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
         let siteId = payload.site || (payload.state && payload.state.site);
-        let siteName = null;
-        
-        if (siteId) {
-          if (Array.isArray(siteId)) {
-            siteId = siteId[0];
-          }
-          if (typeof siteId === 'string') {
-            const site = this.sites.find(s => s.id === siteId);
-            siteName = site ? site.name : null;
-          }
+      let siteName = null;
+      
+      if (siteId) {
+        if (Array.isArray(siteId)) {
+          siteId = siteId[0];
         }
+        if (typeof siteId === 'string') {
+          const site = this.sites.find(s => s.id === siteId);
+          siteName = site ? site.name : null;
+        }
+      }
       
       const category = getDeviceCategory(deviceType);
       const deviceName = getDeviceName(payload);
