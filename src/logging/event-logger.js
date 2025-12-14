@@ -14,6 +14,7 @@ const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 const fs = require('fs');
 const util = require('util'); // Зачем: безопасно сериализуем объекты в файл-лог без console spam
+const os = require('os'); // Зачем: поддержка ~ в путях (например OPENSEARCH_CA_CERT)
 // Зачем: корректируем пути импортов после перемещения файла в src/logging
 const state = require('../controllers/state');
 const { VAR, TMP } = require('../assets/constants'); // Зачем: единые пути var/tmp для логов и кэшей
@@ -30,6 +31,68 @@ const {
   NUMERIC_PARAMS
 } = require('./event-log');
 const filters = require('./filters');
+
+// ==========================
+// Env loading (needed for interactive запуск)
+// ==========================
+// Зачем: в интерактивном запуске env из PM2 не подхватывается; OpenSearch модуль читает env на require().
+// Поэтому грузим .env / scripts/ecosystem.config.js ДО require('./opensearch').
+const PROJECT_DIR = path.resolve(__dirname, '..', '..');
+
+const loadDotEnv = () => {
+  try {
+    const envFile = path.join(PROJECT_DIR, '.env');
+    if (!fs.existsSync(envFile)) return;
+    const content = fs.readFileSync(envFile, 'utf8');
+    content.split('\n').forEach((line) => {
+      const trimmed = String(line).trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      const idx = trimmed.indexOf('=');
+      if (idx <= 0) return;
+      const key = trimmed.slice(0, idx).trim();
+      const valueRaw = trimmed.slice(idx + 1).trim();
+      if (!key) return;
+      if (process.env[key] !== undefined && process.env[key] !== '') return; // не перетираем уже заданное
+      const value = valueRaw.replace(/^["']|["']$/g, '');
+      process.env[key] = value;
+    });
+  } catch (e) {
+    // Зачем: ошибки чтения env не должны ломать сервис
+  }
+};
+
+const loadEcosystemEnvFallback = () => {
+  try {
+    const ecoFile = path.join(PROJECT_DIR, 'scripts', 'ecosystem.config.js');
+    if (!fs.existsSync(ecoFile)) return;
+    // Загружаем конфиг PM2 и вытягиваем env для приложения logger
+    // Важно: только если переменная ещё не задана.
+    // eslint-disable-next-line global-require, import/no-dynamic-require
+    const eco = require(ecoFile);
+    const apps = Array.isArray(eco?.apps) ? eco.apps : [];
+    const loggerApp =
+      apps.find((a) => a?.name === 'logger') ||
+      apps.find((a) => String(a?.script || '').includes('event-logger.js')) ||
+      null;
+    const env = loggerApp?.env || {};
+    for (const [k, v] of Object.entries(env)) {
+      if (process.env[k] !== undefined && process.env[k] !== '') continue;
+      if (v === undefined || v === null) continue;
+      process.env[k] = String(v);
+    }
+  } catch (e) {
+    // ignore
+  }
+};
+
+loadDotEnv();
+loadEcosystemEnvFallback();
+
+// Зачем: опционально расширяем ~ в OPENSEARCH_CA_CERT (используется в opensearch.js)
+if (process.env.OPENSEARCH_CA_CERT && process.env.OPENSEARCH_CA_CERT.startsWith('~')) {
+  process.env.OPENSEARCH_CA_CERT = process.env.OPENSEARCH_CA_CERT.replace('~', os.homedir());
+}
+
 const opensearch = require('./opensearch');
 
 // Зачем: определение типов устройств-потребителей для добавления признака consumer в события
