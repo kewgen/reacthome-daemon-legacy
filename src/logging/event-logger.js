@@ -2317,9 +2317,35 @@ let currentConsumersDupLogFile = null; // Зачем: отдельный фай�
 const DUPLICATE_WINDOW_MS = parseInt(process.env.DUPLICATE_WINDOW_MS || '2000', 10); // 2 секунды
 const DUPLICATE_MAX_KEYS = parseInt(process.env.DUPLICATE_MAX_KEYS || '50000', 10);
 const recentConsumerEventKeyCache = new Map(); // key -> { ts, ws_seq }
+// Зачем: дедупликация всех событий перед записью в файл, чтобы предотвратить дубликаты при повторной обработке
+const recentEventKeyCache = new Map(); // key -> { ts, logger_pid }
 
 const writeEventToFile = (event) => {
   try {
+    // Зачем: дедупликация событий перед записью в файл, чтобы предотвратить дубликаты при повторной обработке
+    // Используем ключ без timestamp, т.к. повторные сообщения могут отличаться на 1-2мс по timestamp
+    const now = Date.now();
+    const key = `${event.id}|${event.param}|${String(event.old)}|${String(event.new)}|${event.logger_pid || 'unknown'}`;
+    const last = recentEventKeyCache.get(key);
+    
+    // Если это дубль в пределах окна - пропускаем запись
+    if (last && (now - last.ts) <= DUPLICATE_WINDOW_MS) {
+      return; // Дубликат - не записываем
+    }
+    
+    // Обновляем кэш
+    recentEventKeyCache.set(key, { ts: now, logger_pid: event.logger_pid || null });
+    
+    // Периодическая чистка кэша при превышении размера
+    if (recentEventKeyCache.size > DUPLICATE_MAX_KEYS) {
+      const entries = Array.from(recentEventKeyCache.entries());
+      entries.sort((a, b) => a[1].ts - b[1].ts); // Сортируем по времени
+      const toDelete = Math.floor(DUPLICATE_MAX_KEYS * 0.5); // Удаляем половину старых записей
+      for (let i = 0; i < toDelete && i < entries.length; i++) {
+        recentEventKeyCache.delete(entries[i][0]);
+      }
+    }
+    
     const logDir = path.join(VAR, 'log');
     
     // Создаём папку если не существует
