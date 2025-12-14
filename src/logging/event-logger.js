@@ -362,6 +362,9 @@ const traceIdBaseTimestampCache = new Map(); // trace_id -> baseTimestamp
 // 2.2. Счетчик устройств для каждого trace_id
 // Зачем: инкремент timestamp для каждого устройства в цепочке, чтобы они были после скрипта
 const traceIdDeviceCounterCache = new Map(); // trace_id -> counter
+// 2.2.1. Счетчик актуаторов для каждого trace_id
+// Зачем: отдельный счетчик для актуаторов (каналов), чтобы они были раньше конечных устройств
+const traceIdActuatorCounterCache = new Map(); // trace_id -> actuatorCounter
 // 2.3. Счетчик синтетических событий скриптов для каждого trace_id
 // Зачем: глобальный счетчик для всех синтетических событий скриптов в цепочке, чтобы они имели уникальные timestamp
 const traceIdScriptCounterCache = new Map(); // trace_id -> counter
@@ -1866,11 +1869,24 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
   } else if (context.trace_id && traceIdBaseTimestampCache.has(context.trace_id)) {
     // Устройство связано со скриптом - используем базовый timestamp из кэша + инкремент
     const traceBaseTimestamp = traceIdBaseTimestampCache.get(context.trace_id);
-    // Инкрементируем счетчик устройств для этого trace_id
-    const deviceCounter = (traceIdDeviceCounterCache.get(context.trace_id) || 0) + 1;
-    traceIdDeviceCounterCache.set(context.trace_id, deviceCounter);
-    // Устройства должны быть после скрипта (скрипт имеет timestamp-1ms, устройства имеют timestamp+0ms, +1ms, +2ms...)
-    eventTimestamp = traceBaseTimestamp + deviceCounter;
+    
+    // Зачем: определяем тип устройства для правильной последовательности
+    // Актуаторы (каналы) должны быть раньше конечных устройств
+    const isActuator = isChannelId(id) || isActuatorDevice(id);
+    
+    if (isActuator) {
+      // Актуатор - используем отдельный счетчик с меньшим инкрементом
+      const actuatorCounter = (traceIdActuatorCounterCache.get(context.trace_id) || 0) + 1;
+      traceIdActuatorCounterCache.set(context.trace_id, actuatorCounter);
+      // Актуаторы: timestamp+0ms, +1ms, +2ms...
+      eventTimestamp = traceBaseTimestamp + actuatorCounter;
+    } else {
+      // Конечное устройство - используем счетчик устройств с большим отступом
+      const deviceCounter = (traceIdDeviceCounterCache.get(context.trace_id) || 0) + 1;
+      traceIdDeviceCounterCache.set(context.trace_id, deviceCounter);
+      // Конечные устройства: timestamp+100ms, +101ms, +102ms... (чтобы быть после актуаторов)
+      eventTimestamp = traceBaseTimestamp + 100 + deviceCounter;
+    }
   } else {
     eventTimestamp = (typeof newState.timestamp === 'number' && Number.isFinite(newState.timestamp))
       ? newState.timestamp
