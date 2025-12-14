@@ -35,6 +35,25 @@ const bootLog = (line) => {
   } catch (e) {}
 };
 
+// Зачем: важные "разовые" факты при старте должны быть видны оператору в консоли даже в интерактивном режиме.
+// Важно: печатаем ДО запуска 📊 панели и только 2–3 строки, чтобы не ломать интерактив.
+const printStartupFactsToConsole = () => {
+  if (!IS_TTY) return;
+  try {
+    const osEnabled = opensearch && opensearch.isEnabled ? opensearch.isEnabled() : false;
+    const osUrl = process.env.OPENSEARCH_URL || '';
+    const maxSockets = process.env.OPENSEARCH_MAX_SOCKETS || '';
+    const timeoutMs = process.env.OPENSEARCH_REQUEST_TIMEOUT_MS || '';
+
+    // stdout: намеренно — оператор должен увидеть это сразу.
+    console.log(`[BOOT] pid=${process.pid} cwd=${process.cwd()}`);
+    console.log(`[BOOT] ws=${DAEMON_WS_URL}`);
+    console.log(`[BOOT] os=${osEnabled ? 'ON' : 'OFF'} url=${osUrl || '(empty)'} maxSockets=${maxSockets || '(default)'} timeoutMs=${timeoutMs || '(default)'}`);
+  } catch (e) {
+    // ignore
+  }
+};
+
 // ==========================
 // Env loading (needed for interactive запуск)
 // ==========================
@@ -2548,8 +2567,14 @@ process.on('unhandledRejection', (err) => {
 
 // Запуск
 
-log(`Подключение к демону: ${DAEMON_WS_URL}`);
-log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
+// В TTY показываем стартовые факты в консоли (однократно), затем работает только 📊 панель.
+// В non-TTY (PM2) остаёмся на обычных логах.
+if (IS_TTY) {
+  printStartupFactsToConsole();
+} else {
+  log(`Подключение к демону: ${DAEMON_WS_URL}`);
+  log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
+}
 
 // Зачем: восстанавливаем кэш длительности до подключения к WS, чтобы duration считался после рестарта
 loadActuatorCache();

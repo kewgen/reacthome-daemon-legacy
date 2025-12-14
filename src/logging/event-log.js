@@ -1,9 +1,49 @@
 const fs = require('fs');
 const path = require('path');
+const util = require('util'); // Зачем: безопасно сериализуем ошибки/объекты в файл-лог в TTY режиме
 const state = require('../controllers/state');
 const { VAR } = require('../assets/constants');
 const opensearch = require('./opensearch');
 const filters = require('./filters');
+
+// Правило: в интерактивном режиме нельзя спамить в консоль (ломает 📊 панель в event-logger).
+// Зачем: event-log используется и внутри event-logger, поэтому свои сообщения в TTY складываем в отдельный файл.
+const IS_TTY = !!process.stdout.isTTY;
+let currentEventLogFile = null;
+const formatArgs = (args) => {
+  try {
+    if (!args || args.length === 0) return '';
+    return args.map((a) => (typeof a === 'string' ? a : util.inspect(a, { depth: 4, breakLength: 160 }))).join(' ');
+  } catch (e) {
+    return '';
+  }
+};
+const writeEventLogFile = (level, message, args) => {
+  try {
+    const logDir = path.join(VAR, 'log');
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const today = new Date().toISOString().split('T')[0];
+    const file = path.join(logDir, `event-log-${today}.log`);
+    if (currentEventLogFile !== file) currentEventLogFile = file;
+    const ts = new Date().toISOString();
+    const extra = formatArgs(args);
+    fs.appendFileSync(currentEventLogFile, `[${ts}] [pid:${process.pid}] [${level}] ${message}${extra ? ' ' + extra : ''}\n`, 'utf8');
+  } catch (e) {
+    // ignore
+  }
+};
+const elog = (message, ...args) => {
+  if (IS_TTY) return writeEventLogFile('INFO', message, args);
+  console.log(message, ...args);
+};
+const elogWarn = (message, ...args) => {
+  if (IS_TTY) return writeEventLogFile('WARN', message, args);
+  console.warn(message, ...args);
+};
+const elogError = (message, ...args) => {
+  if (IS_TTY) return writeEventLogFile('ERROR', message, args);
+  console.error(message, ...args);
+};
 
 // Константы (оптимизированы для Raspberry Pi)
 const BATCH_SIZE = 50;
@@ -89,7 +129,7 @@ const cleanupOldLogs = async (aggressive = false) => {
     for (const info of fileInfos) {
       if (info.age > maxAge) {
         await fs.promises.unlink(info.filePath);
-        console.log(`[event-log] Удалён старый лог: ${info.file} (возраст: ${Math.floor(info.age / (24 * 60 * 60 * 1000))} дней)`);
+        elog(`[event-log] Удалён старый лог: ${info.file} (возраст: ${Math.floor(info.age / (24 * 60 * 60 * 1000))} дней)`);
       }
     }
     
@@ -101,7 +141,7 @@ const cleanupOldLogs = async (aggressive = false) => {
         for (const info of fileInfos) {
           if (fs.existsSync(info.filePath)) {
             await fs.promises.unlink(info.filePath);
-            console.log(`[event-log] Удалён файл для освобождения места: ${info.file} (${(info.size / (1024 * 1024)).toFixed(2)}MB)`);
+            elog(`[event-log] Удалён файл для освобождения места: ${info.file} (${(info.size / (1024 * 1024)).toFixed(2)}MB)`);
             
             const newDirSizeMB = await checkLogDirSize();
             if (newDirSizeMB <= MAX_LOG_DIR_SIZE_MB) {
@@ -112,7 +152,7 @@ const cleanupOldLogs = async (aggressive = false) => {
       }
     }
   } catch (err) {
-    console.error('[event-log] Ошибка очистки старых логов:', err.message);
+    elogError('[event-log] Ошибка очистки старых логов:', err.message);
   }
 };
 
@@ -151,7 +191,7 @@ const initLogFile = async () => {
   // Проверка размера папки
   const dirSizeMB = await checkLogDirSize();
   if (dirSizeMB > MAX_LOG_DIR_SIZE_MB) {
-    console.warn(`[event-log] Размер папки логов превышает ${MAX_LOG_DIR_SIZE_MB}MB (${dirSizeMB.toFixed(2)}MB), выполняется агрессивная очистка`);
+    elogWarn(`[event-log] Размер папки логов превышает ${MAX_LOG_DIR_SIZE_MB}MB (${dirSizeMB.toFixed(2)}MB), выполняется агрессивная очистка`);
     await cleanupOldLogs(true);
   }
   
@@ -168,7 +208,7 @@ const initLogFile = async () => {
         const timestamp = new Date().toISOString().replace(/:/g, '-');
         const rotatedFile = path.join(logDir, `events-${today}-${timestamp}.jsonl`);
         await fs.promises.rename(currentLogFile, rotatedFile);
-        console.log(`[event-log] Файл лога ротирован: ${fileSizeMB.toFixed(2)}MB`);
+        elog(`[event-log] Файл лога ротирован: ${fileSizeMB.toFixed(2)}MB`);
       }
     }
   } catch (err) {
@@ -324,12 +364,12 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   const cacheKey = `${id}_${maxDepth}`;
   const cached = siteNameCache.get(cacheKey);
   if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-    if (debug) console.log(`[getSiteName] Кеш для ${id}:`, cached.value);
+    if (debug) elog(`[getSiteName] Кеш для ${id}:`, cached.value);
     return cached.value;
   }
   
   if (visited.has(id) || maxDepth <= 0) {
-    if (debug) console.log(`[getSiteName] Превышен maxDepth или циклическая ссылка для ${id}`);
+    if (debug) elog(`[getSiteName] Превышен maxDepth или циклическая ссылка для ${id}`);
     const result = null;
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
@@ -338,14 +378,14 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   
   const current = state.get(id);
   if (!current || typeof current !== 'object') {
-    if (debug) console.log(`[getSiteName] Объект ${id} не найден или не является объектом`);
+    if (debug) elog(`[getSiteName] Объект ${id} не найден или не является объектом`);
     const result = null;
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
   
   if (debug) {
-    console.log(`[getSiteName] Проверка ${id}:`, {
+    elog(`[getSiteName] Проверка ${id}:`, {
       type: current.type,
       hasSite: !!current.site,
       siteType: Array.isArray(current.site) ? 'array' : typeof current.site,
@@ -363,7 +403,7 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   // Константа SITE = "site" (нижний регистр), а не "SITE"
   if (current.type === 'site' || current.type === 'SITE') {
     const result = current.title || current.code || null;
-    if (debug) console.log(`[getSiteName] Найден SITE для ${id}:`, result);
+    if (debug) elog(`[getSiteName] Найден SITE для ${id}:`, result);
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
@@ -372,7 +412,7 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   // Константа PROJECT = "project" (нижний регистр), а не "PROJECT"
   if (current.type === 'project' || current.type === 'PROJECT') {
     const result = current.title || current.code || null;
-    if (debug) console.log(`[getSiteName] Найден PROJECT для ${id}:`, result);
+    if (debug) elog(`[getSiteName] Найден PROJECT для ${id}:`, result);
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
@@ -391,10 +431,10 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
     }
     
     if (siteId && typeof siteId === 'string') {
-      if (debug) console.log(`[getSiteName] Рекурсивный поиск для site=${siteId}`);
+      if (debug) elog(`[getSiteName] Рекурсивный поиск для site=${siteId}`);
       const site = getSiteName(siteId, maxDepth - 1, visited, debug);
       if (site) {
-        if (debug) console.log(`[getSiteName] Найден site через site для ${id}:`, site);
+        if (debug) elog(`[getSiteName] Найден site через site для ${id}:`, site);
         siteNameCache.set(cacheKey, { value: site, timestamp: Date.now() });
         return site;
       }
@@ -403,10 +443,10 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   
   // Проверить project (fallback, если нет site) - возвращаем Project (pochta, mindal)
   if (current.project && typeof current.project === 'string') {
-    if (debug) console.log(`[getSiteName] Рекурсивный поиск для project=${current.project}`);
+    if (debug) elog(`[getSiteName] Рекурсивный поиск для project=${current.project}`);
     const project = getSiteName(current.project, maxDepth - 1, visited, debug);
     if (project) {
-      if (debug) console.log(`[getSiteName] Найден site через project для ${id}:`, project);
+      if (debug) elog(`[getSiteName] Найден site через project для ${id}:`, project);
       siteNameCache.set(cacheKey, { value: project, timestamp: Date.now() });
       return project;
     }
@@ -414,16 +454,16 @@ const getSiteName = (id, maxDepth = 10, visited = new Set(), debug = false) => {
   
   // Проверить parent (fallback для каналов и других вложенных объектов)
   if (current.parent && typeof current.parent === 'string') {
-    if (debug) console.log(`[getSiteName] Рекурсивный поиск для parent=${current.parent}`);
+    if (debug) elog(`[getSiteName] Рекурсивный поиск для parent=${current.parent}`);
     const parentSite = getSiteName(current.parent, maxDepth - 1, visited, debug);
     if (parentSite) {
-      if (debug) console.log(`[getSiteName] Найден site через parent для ${id}:`, parentSite);
+      if (debug) elog(`[getSiteName] Найден site через parent для ${id}:`, parentSite);
       siteNameCache.set(cacheKey, { value: parentSite, timestamp: Date.now() });
       return parentSite;
     }
   }
   
-  if (debug) console.log(`[getSiteName] Не найдено site для ${id}`);
+  if (debug) elog(`[getSiteName] Не найдено site для ${id}`);
   const result = null;
   siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
   return result;
@@ -599,7 +639,7 @@ const writeBatch = async () => {
   // Проверка доступного места на диске перед записью
   const freeSpaceMB = await checkDiskSpace();
   if (freeSpaceMB < 10) { // Меньше 10MB свободного места
-    console.warn(`[event-log] Мало места на диске: ${freeSpaceMB.toFixed(2)}MB, пропуск записи`);
+    elogWarn(`[event-log] Мало места на диске: ${freeSpaceMB.toFixed(2)}MB, пропуск записи`);
     // Не добавляем в failedBatch, чтобы не расходовать память
     return;
   }
@@ -616,14 +656,14 @@ const writeBatch = async () => {
         const timestamp = new Date().toISOString().replace(/:/g, '-');
         const rotatedFile = path.join(logDir, `events-${today}-${timestamp}.jsonl`);
         await fs.promises.rename(currentLogFile, rotatedFile);
-        console.log(`[event-log] Файл лога ротирован: ${fileSizeMB.toFixed(2)}MB`);
+        elog(`[event-log] Файл лога ротирован: ${fileSizeMB.toFixed(2)}MB`);
         
         // Создать новый файл для текущего дня
         currentLogFile = path.join(logDir, `events-${today}.jsonl`);
       }
     }
   } catch (err) {
-    console.error('[event-log] Ошибка проверки размера файла:', err.message);
+    elogError('[event-log] Ошибка проверки размера файла:', err.message);
   }
   
   // Оптимизированная сериализация (один JSON.stringify для всего батча)
@@ -633,7 +673,7 @@ const writeBatch = async () => {
       lines += JSON.stringify(event) + '\n';
     } catch (err) {
       // Пропустить событие с ошибкой сериализации
-      console.error('[event-log] Ошибка сериализации события:', err.message);
+      elogError('[event-log] Ошибка сериализации события:', err.message);
     }
   }
   
@@ -642,13 +682,13 @@ const writeBatch = async () => {
     
     // Если были failed события - логировать успешное восстановление
     if (tempFailed) {
-      console.log(`[event-log] Recovered ${eventsToWrite.length} failed events`);
+      elog(`[event-log] Recovered ${eventsToWrite.length} failed events`);
     }
     
     // Отправка в OpenSearch (асинхронно, не блокирует запись в файл)
     if (opensearch.isEnabled()) {
       opensearch.sendBatch(eventsToWrite).catch(err => {
-        console.error('[event-log] Ошибка отправки в OpenSearch:', err.message);
+        elogError('[event-log] Ошибка отправки в OpenSearch:', err.message);
       });
     }
     
@@ -657,14 +697,14 @@ const writeBatch = async () => {
       clearCache();
     }
   } catch (err) {
-    console.error('[event-log] Ошибка записи в файл:', err.message);
+    elogError('[event-log] Ошибка записи в файл:', err.message);
     
     // Добавить события в резервное хранилище (только если есть место)
     if (failedBatch.length < FAILED_BATCH_SIZE) {
       failedBatch.push(...eventsToWrite);
     } else {
       // Если резервное хранилище переполнено, просто отбрасываем события
-      console.error(`[event-log] Dropped ${eventsToWrite.length} events due to failed batch overflow`);
+      elogError(`[event-log] Dropped ${eventsToWrite.length} events due to failed batch overflow`);
     }
     
     // Повторная попытка через 10 секунд (увеличено для снижения нагрузки)
@@ -888,7 +928,7 @@ const setupGracefulShutdown = () => {
       // Немедленный flush всех событий
       await flush();
       
-      console.log('[event-log] Graceful shutdown completed');
+      elog('[event-log] Graceful shutdown completed');
       
       // Выйти из процесса (для SIGTERM/SIGINT)
       if (sig === 'SIGTERM' || sig === 'SIGINT') {
@@ -922,7 +962,7 @@ const init = async () => {
     await cleanupOldLogs();
     const dirSizeMB = await checkLogDirSize();
     if (dirSizeMB > MAX_LOG_DIR_SIZE_MB) {
-      console.warn(`[event-log] Размер папки логов превышает ${MAX_LOG_DIR_SIZE_MB}MB (${dirSizeMB.toFixed(2)}MB), выполняется агрессивная очистка`);
+      elogWarn(`[event-log] Размер папки логов превышает ${MAX_LOG_DIR_SIZE_MB}MB (${dirSizeMB.toFixed(2)}MB), выполняется агрессивная очистка`);
       await cleanupOldLogs(true); // Агрессивная очистка
     }
     
@@ -936,14 +976,14 @@ const init = async () => {
       }
     }
     if (cleanedSiteNames > 0) {
-      console.log(`[event-log] Очищено ${cleanedSiteNames} устаревших записей из siteNameCache`);
+      elog(`[event-log] Очищено ${cleanedSiteNames} устаревших записей из siteNameCache`);
     }
   }, 10 * 60 * 1000); // 10 минут
 };
 
 // Автоматическая инициализация при загрузке модуля
 init().catch(err => {
-  console.error('[event-log] Ошибка инициализации:', err);
+  elogError('[event-log] Ошибка инициализации:', err);
 });
 
 // Логирование события перезапуска демона
@@ -1000,12 +1040,12 @@ const logDaemonRestart = (reason, details = {}) => {
     
     // Немедленный flush для события перезапуска
     flush().catch(err => {
-      console.error('[event-log] Ошибка логирования перезапуска:', err.message);
+      elogError('[event-log] Ошибка логирования перезапуска:', err.message);
     });
     
-    console.log(`[event-log] Зафиксирован перезапуск демона: ${reason}`, restartDetails);
+    elog(`[event-log] Зафиксирован перезапуск демона: ${reason}`, restartDetails);
   } catch (err) {
-    console.error('[event-log] Ошибка логирования перезапуска:', err.message);
+    elogError('[event-log] Ошибка логирования перезапуска:', err.message);
   }
 };
 
