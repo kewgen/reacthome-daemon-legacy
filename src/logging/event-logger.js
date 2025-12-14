@@ -76,7 +76,17 @@ const loadEcosystemEnvFallback = () => {
       null;
     const env = loggerApp?.env || {};
     for (const [k, v] of Object.entries(env)) {
-      if (process.env[k] !== undefined && process.env[k] !== '') continue;
+      // Зачем: в интерактивном режиме нам критично включать OpenSearch.
+      // Если в локальном окружении переменная задана как 'false' (или пуста), но в ecosystem она корректная —
+      // берём значение из ecosystem.
+      const shouldForceFromEcosystem =
+        IS_TTY &&
+        (k === 'DAEMON_WS_URL' || String(k).startsWith('OPENSEARCH_')) &&
+        (process.env[k] === undefined || process.env[k] === '' || process.env[k] === 'false');
+
+      if (!shouldForceFromEcosystem) {
+        if (process.env[k] !== undefined && process.env[k] !== '') continue;
+      }
       if (v === undefined || v === null) continue;
       process.env[k] = String(v);
     }
@@ -94,6 +104,17 @@ if (process.env.OPENSEARCH_CA_CERT && process.env.OPENSEARCH_CA_CERT.startsWith(
 }
 
 const opensearch = require('./opensearch');
+
+// Зачем: диагностика причины OS⚪ в интерактивном режиме (пишем в файл, не в консоль)
+if (IS_TTY) {
+  try {
+    writeInteractiveLog(
+      'INFO',
+      `env: OPENSEARCH_ENABLED=${process.env.OPENSEARCH_ENABLED || ''} OPENSEARCH_URL=${process.env.OPENSEARCH_URL ? 'set' : ''} DAEMON_WS_URL=${process.env.DAEMON_WS_URL || ''}`,
+      []
+    );
+  } catch (e) {}
+}
 
 // Зачем: определение типов устройств-потребителей для добавления признака consumer в события
 // Алгоритм взят из src/monitor.js
