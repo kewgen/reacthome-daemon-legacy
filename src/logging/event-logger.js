@@ -1718,6 +1718,71 @@ const handleActionSet = (message, wsMeta = null) => {
     const traceId = generateTraceId(id, context, keyParam);
     context.trace_id = traceId;
     
+    // Зачем: логируем событие от schedule скрипта ПЕРВЫМ в цепочке, до синтетических событий скриптов
+    // чтобы timestamp был правильным и отражал последовательность: schedule -> скрипт -> устройства
+    const role = getDeviceRole(id);
+    if (role === 'schedule' && context.trace_id) {
+      // Зачем: уменьшаем timestamp на 1ms, чтобы schedule был гарантированно раньше событий скрипта
+      const baseTimestamp = payload.timestamp || Date.now();
+      const scheduleTimestamp = baseTimestamp - 1;
+      // Получаем данные устройства из state
+      const deviceFields = getDeviceFields(id);
+      const deviceName = deviceFields?.name ?? null;
+      const deviceCode = deviceFields?.code ?? null;
+      const deviceTitle = deviceFields?.title ?? null;
+      const deviceHuman = getHumanName({ title: deviceTitle, code: deviceCode, name: deviceName }) || getHumanName(newState);
+      const deviceType = getDeviceTypeWithFallback(id);
+      let deviceTypeStr = null;
+      if (typeof deviceType === 'number') {
+        deviceTypeStr = `DEVICE_TYPE_${deviceType.toString(16).toUpperCase()}`;
+      } else if (typeof deviceType === 'string') {
+        deviceTypeStr = deviceType.toUpperCase();
+      }
+      const isConsumer = isConsumerDevice(deviceType);
+      
+      // Получаем site из родительской локации
+      let siteName = getSiteName(id);
+      if (!siteName && newState.parent) {
+        siteName = getSiteName(newState.parent);
+      }
+      
+      const triggerDeviceId = getTriggerDeviceId(context);
+      
+      const scheduleEvent = {
+        timestamp: scheduleTimestamp, // Зачем: используем timestamp из payload, чтобы событие было первым
+        logger_pid: process.pid,
+        id,
+        device: {
+          type: deviceTypeStr,
+          human: deviceHuman,
+          name: deviceName,
+          code: deviceCode,
+          title: deviceTitle,
+          consumer: isConsumer
+        },
+        param: 'schedule',
+        old: null,
+        new: true,
+        trigger: {
+          type: 'schedule',
+          ref: id,
+          id: triggerDeviceId,
+          human: getTriggerHuman(context, triggerDeviceId),
+          session: context.session || null,
+          remote_ip: context.remote_ip || null
+        },
+        site: siteName || null,
+        project: getProjectName(id),
+        trace_id: context.trace_id || null,
+        kind: 'schedule_triggered',
+        extra: {}
+      };
+      
+      // Отправляем событие от schedule ПЕРВЫМ
+      sendEvent(scheduleEvent, wsMeta);
+      log(`📅 [SCHEDULE] Записано событие от расписания ${id.slice(0,8)}, trace_id=${context.trace_id?.slice(0,8) || 'null'}, timestamp=${scheduleTimestamp}`);
+    }
+    
     // Создаём чистый payload без timestamp для правильного сравнения
     const cleanPayload = { ...payload };
     delete cleanPayload.timestamp;
@@ -1875,68 +1940,8 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     return; // Логируем только событие запуска скрипта
   }
   
-  // Зачем: логируем событие от schedule скрипта, даже если у него нет executed/last_execution
-  // чтобы schedule попал в цепочку trace_id
-  const role = getDeviceRole(id);
-  if (role === 'schedule' && context.trace_id) {
-    // Получаем данные устройства из state
-    const deviceFields = getDeviceFields(id);
-    const deviceName = deviceFields?.name ?? null;
-    const deviceCode = deviceFields?.code ?? null;
-    const deviceTitle = deviceFields?.title ?? null;
-    const deviceHuman = getHumanName({ title: deviceTitle, code: deviceCode, name: deviceName }) || getHumanName(newState);
-    const deviceType = getDeviceTypeWithFallback(id);
-    let deviceTypeStr = null;
-    if (typeof deviceType === 'number') {
-      deviceTypeStr = `DEVICE_TYPE_${deviceType.toString(16).toUpperCase()}`;
-    } else if (typeof deviceType === 'string') {
-      deviceTypeStr = deviceType.toUpperCase();
-    }
-    const isConsumer = isConsumerDevice(deviceType);
-    
-    // Получаем site из родительской локации
-    let siteName = getSiteName(id);
-    if (!siteName && newState.parent) {
-      siteName = getSiteName(newState.parent);
-    }
-    
-    const triggerDeviceId = getTriggerDeviceId(context);
-    
-    const scheduleEvent = {
-      timestamp: eventTimestamp,
-      logger_pid: process.pid,
-      id,
-      device: {
-        type: deviceTypeStr,
-        human: deviceHuman,
-        name: deviceName,
-        code: deviceCode,
-        title: deviceTitle,
-        consumer: isConsumer
-      },
-      param: 'schedule',
-      old: null,
-      new: true,
-      trigger: {
-        type: 'schedule',
-        ref: id,
-        id: triggerDeviceId,
-        human: getTriggerHuman(context, triggerDeviceId),
-        session: context.session || null,
-        remote_ip: context.remote_ip || null
-      },
-      site: siteName || null,
-      project: getProjectName(id),
-      trace_id: context.trace_id || null,
-      kind: 'schedule_triggered',
-      extra: {}
-    };
-    
-    // Отправляем событие от schedule
-    sendEvent(scheduleEvent, wsMeta);
-    log(`📅 [SCHEDULE] Записано событие от расписания ${id.slice(0,8)}, trace_id=${context.trace_id?.slice(0,8) || 'null'}`);
-    return; // Логируем только событие от schedule
-  }
+  // Зачем: событие от schedule уже логируется в handleActionSet ДО processEvent
+  // чтобы оно было первым в цепочке с правильным timestamp
   
   // Использование типизированной системы фильтров
   const allParams = filters.ALL_PARAMS;
