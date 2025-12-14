@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.43 (ручное управление версией)
+ * Версия: 1.0.44 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.43';
+const VERSION = '1.0.44';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1612,8 +1612,25 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
   });
 }
 
-// Копируем текст в буфер обмена
+// Зачем: Определяем, запущен ли монитор в SSH сессии (для удалённого доступа)
+function isSSHSession() {
+  // Проверяем переменные окружения, которые устанавливаются при SSH подключении
+  return !!(process.env.SSH_CLIENT || process.env.SSH_CONNECTION || process.env.SSH_TTY);
+}
+
+// Зачем: Копируем текст в буфер обмена (локально) или выводим для ручного копирования (SSH)
 function copyToClipboard(text) {
+  // Зачем: В SSH сессии нет доступа к локальному буферу обмена, выводим текст для ручного копирования
+  if (isSSHSession()) {
+    // Выводим текст в консоль с разделителями для удобного копирования
+    console.log('\n' + '='.repeat(60));
+    console.log('ТЕКСТ ДЛЯ КОПИРОВАНИЯ (выделите и скопируйте вручную):');
+    console.log('='.repeat(60));
+    console.log(text);
+    console.log('='.repeat(60) + '\n');
+    return;
+  }
+  
   const isMac = process.platform === 'darwin';
   const isLinux = process.platform === 'linux';
   const isWindows = process.platform === 'win32';
@@ -1649,6 +1666,7 @@ function copyToClipboard(text) {
   });
   
   copyProcess.on('error', () => {
+    // Зачем: При ошибке копирования выводим текст для ручного копирования
     console.log('\n=== Текст для копирования ===');
     console.log(text);
     console.log('============================\n');
