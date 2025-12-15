@@ -115,7 +115,6 @@ let ws = null;
 let sessionId = null; // используется только в режиме WIRE_MODE=prefixed
 let isConnected = false;
 let shouldReconnect = true;
-let rl = null;
 let selectionRl = null; // Readline для выбора демона
 
 /**
@@ -200,11 +199,6 @@ function selectDaemon() {
  * Зачем: Использует raw mode для прямой передачи ввода в PTY без обработки readline
  */
 function initReadline() {
-  if (rl) {
-    rl.close();
-    rl = null;
-  }
-  
   // Переводим stdin в raw mode для прямой передачи символов
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(true);
@@ -251,16 +245,13 @@ function initReadline() {
 
 /**
  * Очистка ресурсов
+ * Зачем: Восстанавливает состояние терминала и закрывает интерфейсы readline
  */
 function cleanup() {
   if (process.stdin.isTTY) {
     process.stdin.setRawMode(false);
   }
   process.stdin.pause();
-  if (rl) {
-    rl.close();
-    rl = null;
-  }
   if (selectionRl) {
     selectionRl.close();
     selectionRl = null;

@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "node index.js",
-    "test": "node index.js --help || true"
+    "backup-all": "node backup-all.js",
+    "backup-db": "node backup-db.js"
   },
   "keywords": [
     "ssh",
