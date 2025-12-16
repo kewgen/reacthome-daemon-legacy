@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.49 (ручное управление версией)
+ * Версия: 1.0.50 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.49';
+const VERSION = '1.0.50';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1622,49 +1622,34 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
   });
 }
 
-// Зачем: Копируем текст в буфер обмена (локально) или показываем для выделения мышью (SSH)
+// Зачем: Копируем текст в буфер обмена (локально) или выводим в консоль для ручного копирования (SSH)
 function copyToClipboard(text, callback) {
-  // Зачем: В SSH сессии (особенно через WebSocket) показываем текст на экране для выделения мышью
+  // Зачем: В SSH сессии (особенно через WebSocket) выводим текст в обычную консоль для копирования
   if (isSSHSession()) {
-    // Очищаем экран и показываем текст для копирования
-    term.clear();
-    term.moveTo(1, 1);
-    term.bgCyan.black.bold(' КОПИРОВАНИЕ ТЕКСТА ');
-    term.styleReset();
-    term.moveTo(1, 2);
-    term.gray('─'.repeat(term.width));
-    term.moveTo(1, 3);
-    term.cyan('Выделите текст ниже мышью и скопируйте (Ctrl+C / Cmd+C / Ctrl+Shift+C):');
-    term.moveTo(1, 4);
-    term.gray('─'.repeat(term.width));
+    // Временно отключаем fullscreen режим и захват ввода terminal-kit
+    term.grabInput(false);
+    term.fullscreen(false);
     
-    // Выводим текст построчно, оставляя место внизу для инструкции
-    const lines = text.split('\n');
-    const maxLines = term.height - 7; // Резервируем строки для заголовка и футера
-    const displayLines = lines.slice(0, maxLines);
+    // Выводим текст через обычный console.log для ручного копирования
+    console.log('\n' + '='.repeat(80));
+    console.log('📋 ТЕКСТ ДЛЯ КОПИРОВАНИЯ (выделите мышью и скопируйте):');
+    console.log('='.repeat(80));
+    console.log(text);
+    console.log('='.repeat(80));
+    console.log('\nНажмите Enter для возврата к интерфейсу...\n');
     
-    displayLines.forEach((line, idx) => {
-      term.moveTo(1, 5 + idx);
-      term.white(line);
+    // Ждём нажатия Enter через обычный stdin
+    process.stdin.once('data', () => {
+      // Включаем обратно fullscreen и захват ввода
+      term.fullscreen(true);
+      term.grabInput(true);
+      term.hideCursor(false);
+      
+      if (callback) {
+        callback();
+      }
     });
     
-    if (lines.length > maxLines) {
-      term.moveTo(1, 5 + maxLines);
-      term.yellow(`... и ещё ${lines.length - maxLines} строк (текст обрезан)`);
-    }
-    
-    // Инструкция внизу
-    const bottomLine = term.height - 1;
-    term.moveTo(1, bottomLine);
-    term.gray('─'.repeat(term.width));
-    term.moveTo(1, term.height);
-    term.bgMagenta.white.bold(' Нажмите любую клавишу для возврата ');
-    term.styleReset();
-    
-    // Ждём нажатия клавиши для возврата
-    term.once('key', () => {
-      if (callback) callback();
-    });
     return;
   }
   
