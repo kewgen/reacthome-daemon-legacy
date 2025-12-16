@@ -1,0 +1,1092 @@
+{
+  "version": "1.0",
+  "createdAt": "2025-12-13T16:06:22.646Z",
+  "total": 71,
+  "renames": [
+    {
+      "mac": "50:35:cc:2d:8e:fe",
+      "currentCode": "S4 Ванная",
+      "newCode": "S48",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Ванная",
+      "siteCode": "8",
+      "issues": [
+        "неправильное название помещения: \"Ванна\" (должно быть \"Ванная\")"
+      ],
+      "cycle": "1/2 — Ошибки",
+      "checked": true
+    },
+    {
+      "mac": "d0:7d:77:b5:b8:e1",
+      "currentCode": "Ванная",
+      "newCode": "DP81",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Ванная",
+      "siteCode": "8",
+      "issues": [
+        "неправильное название помещения: \"Ванна\" (должно быть \"Ванная\")"
+      ],
+      "cycle": "1/2 — Ошибки",
+      "checked": true
+    },
+    {
+      "mac": "00:00:00:00:00:00",
+      "currentCode": "Следилка",
+      "newCode": "DEV00",
+      "deviceType": "Тип0x0",
+      "deviceTypeHex": "0x0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false
+    },
+    {
+      "mac": "10:11:71:97:b9:cb",
+      "currentCode": "S4 Коридор",
+      "newCode": "S43",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Прихожая",
+      "siteCode": "3",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S43\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true
+    },
+    {
+      "mac": "10:31:23:60:b7:70",
+      "currentCode": "Спальная",
+      "newCode": "DP71",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Спальная",
+      "siteCode": "7",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP7\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true
+    },
+    {
+      "mac": "10:71:77:17:61:46",
+      "currentCode": "S4 Гостиная",
+      "newCode": "S49",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Гостиная",
+      "siteCode": "9",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S49\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "20:32:84:c9:e6:e9",
+      "currentCode": "Санузел",
+      "newCode": "DI01",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno1)"
+    },
+    {
+      "mac": "28:10:f7:f7:44:21:01:31",
+      "currentCode": "",
+      "newCode": "T01",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno1)"
+    },
+    {
+      "mac": "28:10:f7:f7:44:21:01:b1",
+      "currentCode": "Пол лоджия",
+      "newCode": "T02",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno2)"
+    },
+    {
+      "mac": "28:38:7c:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T03",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno3)"
+    },
+    {
+      "mac": "28:38:7e:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T04",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno4)"
+    },
+    {
+      "mac": "28:38:be:16:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T05",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno5)"
+    },
+    {
+      "mac": "28:38:be:26:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T06",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno6)"
+    },
+    {
+      "mac": "28:38:be:2c:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T07",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno7)"
+    },
+    {
+      "mac": "28:38:be:56:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T08",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno8)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:1c",
+      "currentCode": "",
+      "newCode": "T09",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno9)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:5c",
+      "currentCode": "",
+      "newCode": "T10",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno10)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:9c",
+      "currentCode": "",
+      "newCode": "T11",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno11)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:b8",
+      "currentCode": "",
+      "newCode": "T12",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno12)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:bc",
+      "currentCode": "",
+      "newCode": "T13",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno13)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:01:dc",
+      "currentCode": "Улица",
+      "newCode": "T41",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": "Кладовая",
+      "siteCode": "4",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"T4\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "28:38:be:96:51:21:02:b8",
+      "currentCode": "",
+      "newCode": "T14",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno14)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:05:b8",
+      "currentCode": "",
+      "newCode": "T15",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno15)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:09:b8",
+      "currentCode": "",
+      "newCode": "T16",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno16)"
+    },
+    {
+      "mac": "28:38:be:96:51:21:c1:dc",
+      "currentCode": "",
+      "newCode": "T17",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno17)"
+    },
+    {
+      "mac": "28:38:be:96:51:41:02:b8",
+      "currentCode": "",
+      "newCode": "T18",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno18)"
+    },
+    {
+      "mac": "28:38:be:96:51:45:02:b8",
+      "currentCode": "",
+      "newCode": "T19",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno19)"
+    },
+    {
+      "mac": "28:38:be:96:51:61:02:b8",
+      "currentCode": "",
+      "newCode": "T20",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno20)"
+    },
+    {
+      "mac": "28:38:be:96:51:a1:02:b8",
+      "currentCode": "",
+      "newCode": "T21",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno21)"
+    },
+    {
+      "mac": "28:38:be:96:91:42:02:b8",
+      "currentCode": "",
+      "newCode": "T22",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno22)"
+    },
+    {
+      "mac": "28:38:be:96:a1:42:02:b8",
+      "currentCode": "",
+      "newCode": "T23",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno23)"
+    },
+    {
+      "mac": "28:38:be:96:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T24",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno24)"
+    },
+    {
+      "mac": "28:38:be:96:a5:42:02:b8",
+      "currentCode": "",
+      "newCode": "T25",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno25)"
+    },
+    {
+      "mac": "28:38:be:96:b1:42:02:b8",
+      "currentCode": "",
+      "newCode": "T26",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno26)"
+    },
+    {
+      "mac": "28:70:7c:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T27",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno27)"
+    },
+    {
+      "mac": "28:74:7c:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T28",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno28)"
+    },
+    {
+      "mac": "28:a3:6a:79:51:21:01:07",
+      "currentCode": "Пол ванная",
+      "newCode": "T29",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Исправлено обучением (было: Tno29)"
+    },
+    {
+      "mac": "28:aa:47:0b:70:21:07:c8",
+      "currentCode": "Пол душ",
+      "newCode": "T29",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno29)"
+    },
+    {
+      "mac": "28:aa:50:07:c5:03:c0:2c",
+      "currentCode": "",
+      "newCode": "T30",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno30)"
+    },
+    {
+      "mac": "30:03:a0:ba:3b:f2",
+      "currentCode": "S4 Старшая",
+      "newCode": "S45",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Старшая",
+      "siteCode": "5",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S45\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "30:a3:6b:e4:39:7d",
+      "currentCode": "Младшая",
+      "newCode": "DP11",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Младшая",
+      "siteCode": "1",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP1\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "40:64:06:c0:5d:b5",
+      "currentCode": "Коридор право",
+      "newCode": "DP31",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Прихожая",
+      "siteCode": "3",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP3\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "40:f4:71:fc:f8:4d",
+      "currentCode": "Спальная кровать",
+      "newCode": "DI02",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Исправлено обучением (было: DIno2)"
+    },
+    {
+      "mac": "48:70:7c:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T31",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno31)"
+    },
+    {
+      "mac": "50:35:7b:77:df:ce",
+      "currentCode": "Стол Макса",
+      "newCode": "DI03",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Исправлено обучением (было: DIno3)"
+    },
+    {
+      "mac": "50:70:7c:2d:a3:42:02:b8",
+      "currentCode": "",
+      "newCode": "T32",
+      "deviceType": "TEMPERATURE_EXT",
+      "deviceTypeHex": "0xf0",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не задан"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: Tno32)"
+    },
+    {
+      "mac": "50:85:48:15:00:f1",
+      "currentCode": "S4 Спальная",
+      "newCode": "S47",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Спальная",
+      "siteCode": "7",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S47\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": true,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "50:95:8e:e9:75:02",
+      "currentCode": "Кладовая",
+      "newCode": "DI02",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno2)"
+    },
+    {
+      "mac": "50:e5:6d:43:7c:14",
+      "currentCode": "Старшая",
+      "newCode": "DP51",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Старшая",
+      "siteCode": "5",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP5\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "50:f5:4f:e5:9f:5f",
+      "currentCode": "Душ",
+      "newCode": "DP21",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Душ",
+      "siteCode": "2",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP2\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "60:26:b6:af:a4:07",
+      "currentCode": "Младшая стол",
+      "newCode": "DI03",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno3)"
+    },
+    {
+      "mac": "60:66:13:b4:aa:df",
+      "currentCode": "7.CO2 Спальная",
+      "newCode": "CO271",
+      "deviceType": "CO2_SENSOR",
+      "deviceTypeHex": "0x2b",
+      "site": "Спальная",
+      "siteCode": "7",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"CO27\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "60:76:df:0d:38:21",
+      "currentCode": "Младшая Гоша кровать",
+      "newCode": "DI04",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno4)"
+    },
+    {
+      "mac": "68:27:19:e4:30:a8",
+      "currentCode": "Dim 3",
+      "newCode": "DimA4",
+      "deviceType": "DIM_8",
+      "deviceTypeHex": "0xa4",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false
+    },
+    {
+      "mac": "70:67:1e:01:b9:9b",
+      "currentCode": "9.CO2 Кухня",
+      "newCode": "CO291",
+      "deviceType": "CO2_SENSOR",
+      "deviceTypeHex": "0x2b",
+      "site": "Гостиная",
+      "siteCode": "9",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"CO29\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "70:97:98:af:d0:43",
+      "currentCode": "Прихожая",
+      "newCode": "DP32",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Прихожая",
+      "siteCode": "3",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP3\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "80:98:67:45:dc:23",
+      "currentCode": "S4 Душ",
+      "newCode": "S42",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Душ",
+      "siteCode": "2",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S42\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "80:d8:e5:2f:39:67",
+      "currentCode": "di4 Кладовая?",
+      "newCode": "DI05",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno5)"
+    },
+    {
+      "mac": "90:79:6d:c9:d8:4f",
+      "currentCode": "S4 Прихожая",
+      "newCode": "S43",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Прихожая",
+      "siteCode": "3",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S43\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "90:79:b7:8f:dc:90",
+      "currentCode": "Коридор лево",
+      "newCode": "DP33",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Прихожая",
+      "siteCode": "3",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP3\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "90:89:d3:f1:2d:0f",
+      "currentCode": "S4 Лоджия",
+      "newCode": "S46",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Лоджия",
+      "siteCode": "6",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S46\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "a0:0a:e1:9e:9a:cb",
+      "currentCode": "S4 Кухня",
+      "newCode": "S49",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Гостиная",
+      "siteCode": "9",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S49\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "a0:4a:e3:ee:46:27",
+      "currentCode": "AO 4",
+      "newCode": "DEVA9",
+      "deviceType": "AO_4_DIN",
+      "deviceTypeHex": "0xa9",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false
+    },
+    {
+      "mac": "a0:fa:e7:4f:7f:b3",
+      "currentCode": "1.CO2 Младшая",
+      "newCode": "CO211",
+      "deviceType": "CO2_SENSOR",
+      "deviceTypeHex": "0x2b",
+      "site": "Младшая",
+      "siteCode": "1",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"CO21\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "b0:eb:90:ba:f3:a0",
+      "currentCode": "S4 Младшая",
+      "newCode": "S41",
+      "deviceType": "SMART_4G",
+      "deviceTypeHex": "0x25",
+      "site": "Младшая",
+      "siteCode": "1",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"S41\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "c0:4c:b9:e7:56:f9",
+      "currentCode": "Кровать Ромы ?",
+      "newCode": "DI06",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno6)"
+    },
+    {
+      "mac": "c0:5c:9d:b8:b1:3d",
+      "currentCode": "5.CO2 Старшая",
+      "newCode": "CO251",
+      "deviceType": "CO2_SENSOR",
+      "deviceTypeHex": "0x2b",
+      "site": "Старшая",
+      "siteCode": "5",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"CO25\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "d0:7d:d8:2f:0d:e6",
+      "currentCode": "Гостиная",
+      "newCode": "DP91",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Гостиная",
+      "siteCode": "9",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP9\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    },
+    {
+      "mac": "d0:ad:22:b3:10:14",
+      "currentCode": "Стол Романа",
+      "newCode": "DI07",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno7)"
+    },
+    {
+      "mac": "f0:2f:35:43:3c:91",
+      "currentCode": "Кровать Макса",
+      "newCode": "DI08",
+      "deviceType": "DI_4",
+      "deviceTypeHex": "0x20",
+      "site": null,
+      "siteCode": null,
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Паттерн из проверенных записей (было: DIno8)"
+    },
+    {
+      "mac": "f0:bf:7b:15:82:e7",
+      "currentCode": "Кладовая",
+      "newCode": "DP41",
+      "deviceType": "DOPPLER",
+      "deviceTypeHex": "0x22",
+      "site": "Кладовая",
+      "siteCode": "4",
+      "issues": [
+        "code не соответствует базовому формату (латиница+цифры, без пробелов)",
+        "code не соответствует ожидаемому префиксу \"DP4\" (тип+site)"
+      ],
+      "cycle": "2/2 — Соответствие",
+      "checked": false,
+      "learnedFrom": "Подтверждено паттерном из проверенных записей"
+    }
+  ],
+  "learnedAt": "2025-12-13T18:59:56.438Z",
+  "learnedFrom": 13,
+  "updated": 40,
+  "fixedNo": 0
+}
