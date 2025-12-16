@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.52 (ручное управление версией)
+ * Версия: 1.0.53 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,28 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.52';
+const VERSION = '1.0.53';
+
+// Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
+const GATE_WS_PROTOCOL = 'listen';
+
+// Зачем: Определяем, что URI ведёт на внешний WebSocket gate (нужно для правильного рукопожатия)
+function isGateWebSocketUri(uri) {
+  try {
+    const u = new URL(uri);
+    return u.protocol === 'wss:' && u.hostname === 'gate.reacthome.net';
+  } catch (_) {
+    return false;
+  }
+}
+
+// Зачем: Создаём WebSocket с корректным subprotocol для gate, не меняя payload сообщений
+function createWebSocket(uri) {
+  if (isGateWebSocketUri(uri)) {
+    return new WebSocket(uri, GATE_WS_PROTOCOL);
+  }
+  return new WebSocket(uri);
+}
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1079,8 +1100,9 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
     let connectionTimeoutId = null; // Таймаут для подключения к WebSocket
     let processingStarted = false; // Флаг для предотвращения повторной обработки данных
     
-    console.log(`[DEBUG] Подключение к WebSocket: ${wsUri}`);
-    const ws = new WebSocket(wsUri);
+    const protocolInfo = isGateWebSocketUri(wsUri) ? ` (protocol: ${GATE_WS_PROTOCOL})` : '';
+    console.log(`[DEBUG] Подключение к WebSocket: ${wsUri}${protocolInfo}`);
+    const ws = createWebSocket(wsUri);
     
     // Таймаут подключения к WebSocket (10 секунд)
     connectionTimeoutId = setTimeout(() => {
@@ -5689,7 +5711,7 @@ async function main() {
     const display = new TerminalKitStatusDisplay(devices, sites, locationName, updateInfo);
     
     // Подключаемся к WebSocket для получения обновлений состояния
-    const ws = new WebSocket(WS_URI);
+    const ws = createWebSocket(WS_URI);
     
     // Передаем ссылку на WebSocket в класс для запроса отсутствующих устройств
     display.setWebSocket(ws);
