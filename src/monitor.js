@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.47 (ручное управление версией)
+ * Версия: 1.0.48 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.47';
+const VERSION = '1.0.48';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1622,17 +1622,25 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
   });
 }
 
-// Зачем: Копируем текст в буфер обмена (локально) или выводим для ручного копирования (SSH)
+// Зачем: Копируем текст в буфер обмена (локально) или через OSC 52 (SSH)
 function copyToClipboard(text) {
-  // Зачем: В SSH сессии нет доступа к локальному буферу обмена, выводим текст для ручного копирования
+  // Зачем: В SSH сессии используем OSC 52 для записи в буфер обмена клиента
   if (isSSHSession()) {
-    // Выводим текст в консоль с разделителями для удобного копирования
-    console.log('\n' + '='.repeat(60));
-    console.log('ТЕКСТ ДЛЯ КОПИРОВАНИЯ (выделите и скопируйте вручную):');
-    console.log('='.repeat(60));
-    console.log(text);
-    console.log('='.repeat(60) + '\n');
-    return;
+    try {
+      // OSC 52: \x1b]52;c;<base64>\x07 - стандартная последовательность для копирования в буфер обмена
+      const base64Text = Buffer.from(text, 'utf8').toString('base64');
+      // Некоторые терминалы (tmux/screen) обрезают длинные последовательности, ограничиваем 74994 байта base64
+      const maxLength = 74994;
+      const truncatedBase64 = base64Text.length > maxLength ? base64Text.substring(0, maxLength) : base64Text;
+      
+      // Отправляем OSC 52 последовательность напрямую в stdout
+      process.stdout.write(`\x1b]52;c;${truncatedBase64}\x07`);
+      return;
+    } catch (err) {
+      // Если OSC 52 не сработал, выводим текст для ручного копирования
+      console.error('\nНе удалось скопировать через OSC 52, выделите текст вручную:\n', text);
+      return;
+    }
   }
   
   const isMac = process.platform === 'darwin';
