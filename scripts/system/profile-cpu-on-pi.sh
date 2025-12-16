@@ -249,3 +249,4 @@ rm -f "$TMP_EXPECT" "$TMP_EXPECT_SCP" "$TMP_SCRIPT"
 echo "✅ Профилирование CPU завершено"
 echo ""
 
+
