@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.51 (ручное управление версией)
+ * Версия: 1.0.52 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.51';
+const VERSION = '1.0.52';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1624,20 +1624,23 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
 
 // Зачем: Копируем текст в буфер обмена (локально) или выводим в консоль для ручного копирования (SSH)
 function copyToClipboard(text, callback) {
-  // Зачем: В SSH сессии просто выводим текст в консоль, пользователь скопирует после выхода из монитора
+  // Зачем: В SSH сессии выключаем UI, печатаем текст и завершаем процесс
   if (isSSHSession()) {
-    // Выводим текст через console.log в фоновый лог
+    // Выключаем terminal-kit UI
+    term.grabInput(false);
+    term.fullscreen(false);
+    term.hideCursor(false);
+    
+    // Выводим текст в обычную консоль
     console.log('\n' + '='.repeat(80));
-    console.log('📋 СКОПИРОВАНО В КОНСОЛЬ:');
+    console.log('📋 ТЕКСТ ДЛЯ КОПИРОВАНИЯ:');
     console.log('='.repeat(80));
     console.log(text);
-    console.log('='.repeat(80) + '\n');
+    console.log('='.repeat(80));
+    console.log('\nВыделите текст мышью и скопируйте. Монитор завершён.\n');
     
-    // Callback сразу, чтобы показать уведомление
-    if (callback) {
-      callback();
-    }
-    return;
+    // Завершаем процесс монитора
+    process.exit(0);
   }
   
   const isMac = process.platform === 'darwin';
@@ -4945,23 +4948,16 @@ class TerminalKitStatusDisplay {
     // Зачем: Убираем форматирование и служебные маркеры для чистого текста в буфере
     const textToCopy = deviceInfoContent.replace(/__DEVICE_TITLE__/g, '').replace(/__GREEN_VALUE__/g, '');
     
-    copyToClipboard(textToCopy, () => {
-      // Callback для SSH режима - показываем уведомление
-      this.render();
-      
-      // Показываем уведомление
-      if (isSSHSession()) {
-        term.moveTo(this.rightX + 1, 1);
-        term.bgCyan.black('📋 Текст выведен в консоль. Выйдите (q) и скопируйте из истории');
-      } else {
-        term.moveTo(this.rightX + 1, 1);
-        term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
-      }
-      
+    copyToClipboard(textToCopy);
+    
+    // Показываем уведомление (только для локального режима, в SSH монитор завершается)
+    if (!isSSHSession()) {
+      term.moveTo(this.rightX + 1, 1);
+      term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
       setTimeout(() => {
         this.render();
-      }, 3000);
-    });
+      }, 2000);
+    }
   }
   
   copyTableRowToClipboard() {
@@ -4970,23 +4966,16 @@ class TerminalKitStatusDisplay {
     
     const icon = getDeviceIcon(device.type, device.category);
     const text = `${icon} ${device.name || device.id} | ${device.typeName || '—'} | ${device.site || '—'}`;
-    copyToClipboard(text, () => {
-      // Callback для SSH режима - показываем уведомление
-      this.render();
-      
-      // Показываем уведомление
-      if (isSSHSession()) {
-        term.moveTo(this.centerX, 1);
-        term.bgCyan.black('📋 Строка в консоли. Выйдите (q) и скопируйте');
-      } else {
-        term.moveTo(this.centerX, 1);
-        term.bgGreen.black('✅ Строка скопирована');
-      }
-      
+    copyToClipboard(text);
+    
+    // Показываем уведомление (только для локального режима, в SSH монитор завершается)
+    if (!isSSHSession()) {
+      term.moveTo(this.centerX, 1);
+      term.bgGreen.black('✅ Строка скопирована');
       setTimeout(() => {
         this.render();
-      }, 3000);
-    });
+      }, 2000);
+    }
   }
   
   setDeviceState(deviceId, newState) {
