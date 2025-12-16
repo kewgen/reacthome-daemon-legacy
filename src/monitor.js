@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.48 (ручное управление версией)
+ * Версия: 1.0.49 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.48';
+const VERSION = '1.0.49';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1622,25 +1622,50 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
   });
 }
 
-// Зачем: Копируем текст в буфер обмена (локально) или через OSC 52 (SSH)
-function copyToClipboard(text) {
-  // Зачем: В SSH сессии используем OSC 52 для записи в буфер обмена клиента
+// Зачем: Копируем текст в буфер обмена (локально) или показываем для выделения мышью (SSH)
+function copyToClipboard(text, callback) {
+  // Зачем: В SSH сессии (особенно через WebSocket) показываем текст на экране для выделения мышью
   if (isSSHSession()) {
-    try {
-      // OSC 52: \x1b]52;c;<base64>\x07 - стандартная последовательность для копирования в буфер обмена
-      const base64Text = Buffer.from(text, 'utf8').toString('base64');
-      // Некоторые терминалы (tmux/screen) обрезают длинные последовательности, ограничиваем 74994 байта base64
-      const maxLength = 74994;
-      const truncatedBase64 = base64Text.length > maxLength ? base64Text.substring(0, maxLength) : base64Text;
-      
-      // Отправляем OSC 52 последовательность напрямую в stdout
-      process.stdout.write(`\x1b]52;c;${truncatedBase64}\x07`);
-      return;
-    } catch (err) {
-      // Если OSC 52 не сработал, выводим текст для ручного копирования
-      console.error('\nНе удалось скопировать через OSC 52, выделите текст вручную:\n', text);
-      return;
+    // Очищаем экран и показываем текст для копирования
+    term.clear();
+    term.moveTo(1, 1);
+    term.bgCyan.black.bold(' КОПИРОВАНИЕ ТЕКСТА ');
+    term.styleReset();
+    term.moveTo(1, 2);
+    term.gray('─'.repeat(term.width));
+    term.moveTo(1, 3);
+    term.cyan('Выделите текст ниже мышью и скопируйте (Ctrl+C / Cmd+C / Ctrl+Shift+C):');
+    term.moveTo(1, 4);
+    term.gray('─'.repeat(term.width));
+    
+    // Выводим текст построчно, оставляя место внизу для инструкции
+    const lines = text.split('\n');
+    const maxLines = term.height - 7; // Резервируем строки для заголовка и футера
+    const displayLines = lines.slice(0, maxLines);
+    
+    displayLines.forEach((line, idx) => {
+      term.moveTo(1, 5 + idx);
+      term.white(line);
+    });
+    
+    if (lines.length > maxLines) {
+      term.moveTo(1, 5 + maxLines);
+      term.yellow(`... и ещё ${lines.length - maxLines} строк (текст обрезан)`);
     }
+    
+    // Инструкция внизу
+    const bottomLine = term.height - 1;
+    term.moveTo(1, bottomLine);
+    term.gray('─'.repeat(term.width));
+    term.moveTo(1, term.height);
+    term.bgMagenta.white.bold(' Нажмите любую клавишу для возврата ');
+    term.styleReset();
+    
+    // Ждём нажатия клавиши для возврата
+    term.once('key', () => {
+      if (callback) callback();
+    });
+    return;
   }
   
   const isMac = process.platform === 'darwin';
@@ -4948,14 +4973,19 @@ class TerminalKitStatusDisplay {
     // Зачем: Убираем форматирование и служебные маркеры для чистого текста в буфере
     const textToCopy = deviceInfoContent.replace(/__DEVICE_TITLE__/g, '').replace(/__GREEN_VALUE__/g, '');
     
-    copyToClipboard(textToCopy);
-    
-    // Показываем уведомление
-    term.moveTo(this.rightX + 1, 1);
-    term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
-    setTimeout(() => {
+    copyToClipboard(textToCopy, () => {
+      // Callback для SSH режима - возвращаемся к интерфейсу после копирования
       this.render();
-    }, 2000);
+    });
+    
+    // Показываем уведомление (только для локального режима, в SSH показывается popup)
+    if (!isSSHSession()) {
+      term.moveTo(this.rightX + 1, 1);
+      term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
+      setTimeout(() => {
+        this.render();
+      }, 2000);
+    }
   }
   
   copyTableRowToClipboard() {
@@ -4964,14 +4994,19 @@ class TerminalKitStatusDisplay {
     
     const icon = getDeviceIcon(device.type, device.category);
     const text = `${icon} ${device.name || device.id} | ${device.typeName || '—'} | ${device.site || '—'}`;
-    copyToClipboard(text);
-    
-    // Показываем уведомление
-    term.moveTo(this.centerX, 1);
-    term.bgGreen.black('✅ Строка скопирована');
-    setTimeout(() => {
+    copyToClipboard(text, () => {
+      // Callback для SSH режима - возвращаемся к интерфейсу после копирования
       this.render();
-    }, 2000);
+    });
+    
+    // Показываем уведомление (только для локального режима, в SSH показывается popup)
+    if (!isSSHSession()) {
+      term.moveTo(this.centerX, 1);
+      term.bgGreen.black('✅ Строка скопирована');
+      setTimeout(() => {
+        this.render();
+      }, 2000);
+    }
   }
   
   setDeviceState(deviceId, newState) {
