@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.50 (ручное управление версией)
+ * Версия: 1.0.51 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.50';
+const VERSION = '1.0.51';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -1624,32 +1624,19 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
 
 // Зачем: Копируем текст в буфер обмена (локально) или выводим в консоль для ручного копирования (SSH)
 function copyToClipboard(text, callback) {
-  // Зачем: В SSH сессии (особенно через WebSocket) выводим текст в обычную консоль для копирования
+  // Зачем: В SSH сессии просто выводим текст в консоль, пользователь скопирует после выхода из монитора
   if (isSSHSession()) {
-    // Временно отключаем fullscreen режим и захват ввода terminal-kit
-    term.grabInput(false);
-    term.fullscreen(false);
-    
-    // Выводим текст через обычный console.log для ручного копирования
+    // Выводим текст через console.log в фоновый лог
     console.log('\n' + '='.repeat(80));
-    console.log('📋 ТЕКСТ ДЛЯ КОПИРОВАНИЯ (выделите мышью и скопируйте):');
+    console.log('📋 СКОПИРОВАНО В КОНСОЛЬ:');
     console.log('='.repeat(80));
     console.log(text);
-    console.log('='.repeat(80));
-    console.log('\nНажмите Enter для возврата к интерфейсу...\n');
+    console.log('='.repeat(80) + '\n');
     
-    // Ждём нажатия Enter через обычный stdin
-    process.stdin.once('data', () => {
-      // Включаем обратно fullscreen и захват ввода
-      term.fullscreen(true);
-      term.grabInput(true);
-      term.hideCursor(false);
-      
-      if (callback) {
-        callback();
-      }
-    });
-    
+    // Callback сразу, чтобы показать уведомление
+    if (callback) {
+      callback();
+    }
     return;
   }
   
@@ -4959,18 +4946,22 @@ class TerminalKitStatusDisplay {
     const textToCopy = deviceInfoContent.replace(/__DEVICE_TITLE__/g, '').replace(/__GREEN_VALUE__/g, '');
     
     copyToClipboard(textToCopy, () => {
-      // Callback для SSH режима - возвращаемся к интерфейсу после копирования
+      // Callback для SSH режима - показываем уведомление
       this.render();
-    });
-    
-    // Показываем уведомление (только для локального режима, в SSH показывается popup)
-    if (!isSSHSession()) {
-      term.moveTo(this.rightX + 1, 1);
-      term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
+      
+      // Показываем уведомление
+      if (isSSHSession()) {
+        term.moveTo(this.rightX + 1, 1);
+        term.bgCyan.black('📋 Текст выведен в консоль. Выйдите (q) и скопируйте из истории');
+      } else {
+        term.moveTo(this.rightX + 1, 1);
+        term.bgGreen.black('✅ Содержимое раздела "Устройство" скопировано');
+      }
+      
       setTimeout(() => {
         this.render();
-      }, 2000);
-    }
+      }, 3000);
+    });
   }
   
   copyTableRowToClipboard() {
@@ -4980,18 +4971,22 @@ class TerminalKitStatusDisplay {
     const icon = getDeviceIcon(device.type, device.category);
     const text = `${icon} ${device.name || device.id} | ${device.typeName || '—'} | ${device.site || '—'}`;
     copyToClipboard(text, () => {
-      // Callback для SSH режима - возвращаемся к интерфейсу после копирования
+      // Callback для SSH режима - показываем уведомление
       this.render();
-    });
-    
-    // Показываем уведомление (только для локального режима, в SSH показывается popup)
-    if (!isSSHSession()) {
-      term.moveTo(this.centerX, 1);
-      term.bgGreen.black('✅ Строка скопирована');
+      
+      // Показываем уведомление
+      if (isSSHSession()) {
+        term.moveTo(this.centerX, 1);
+        term.bgCyan.black('📋 Строка в консоли. Выйдите (q) и скопируйте');
+      } else {
+        term.moveTo(this.centerX, 1);
+        term.bgGreen.black('✅ Строка скопирована');
+      }
+      
       setTimeout(() => {
         this.render();
-      }, 2000);
-    }
+      }, 3000);
+    });
   }
   
   setDeviceState(deviceId, newState) {
