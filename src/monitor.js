@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.44 (ручное управление версией)
+ * Версия: 1.0.47 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.44';
+const VERSION = '1.0.47';
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
@@ -760,7 +760,17 @@ const checkForRemoteUpdateAndMaybeApply = async () => {
   }
 };
 
-const UPDATE_INTERVAL = 30000; // 30 секунд - оптимальный баланс между актуальностью данных и нагрузкой на CPU
+// Зачем: Определяем, запущен ли монитор в SSH сессии (для удалённого доступа)
+function isSSHSession() {
+  // Проверяем переменные окружения, которые устанавливаются при SSH подключении
+  return !!(process.env.SSH_CLIENT || process.env.SSH_CONNECTION || process.env.SSH_TTY);
+}
+
+// Зачем: Определяем режим низкой пропускной способности для оптимизации SSH канала
+const LOW_BANDWIDTH_MODE = isSSHSession() || process.env.MONITOR_LOW_BANDWIDTH === '1' || process.env.MONITOR_LOW_BANDWIDTH === 'true';
+
+// Зачем: Увеличиваем интервал обновления для SSH сессий, чтобы снизить нагрузку на узкий канал
+const UPDATE_INTERVAL = LOW_BANDWIDTH_MODE ? 60000 : 30000; // 60 сек для SSH, 30 сек локально
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
 const SHOW_DAEMON_DUID = process.env.MONITOR_SHOW_DAEMON_DUID === '1' || process.env.MONITOR_SHOW_DAEMON_DUID === 'true'; // Зачем: Флаг для отображения duid демона в заголовке (по умолчанию выключен)
@@ -1612,12 +1622,6 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
   });
 }
 
-// Зачем: Определяем, запущен ли монитор в SSH сессии (для удалённого доступа)
-function isSSHSession() {
-  // Проверяем переменные окружения, которые устанавливаются при SSH подключении
-  return !!(process.env.SSH_CLIENT || process.env.SSH_CONNECTION || process.env.SSH_TTY);
-}
-
 // Зачем: Копируем текст в буфер обмена (локально) или выводим для ручного копирования (SSH)
 function copyToClipboard(text) {
   // Зачем: В SSH сессии нет доступа к локальному буферу обмена, выводим текст для ручного копирования
@@ -1751,7 +1755,8 @@ class TerminalKitStatusDisplay {
     
     this.isNavigating = false;
     this.navigationTimer = null;
-    this.navigationDebounceMs = 300; // Окно тишины, после которого считаем навигацию завершённой
+    // Зачем: Увеличиваем debounce навигации для SSH сессий
+    this.navigationDebounceMs = LOW_BANDWIDTH_MODE ? 600 : 300; // 600мс для SSH, 300мс локально
     this.pendingFiltersReapply = false; // Нужно переприменить фильтры после навигации
     this.pendingRebuildFilterRows = false; // Нужно пересобрать строки фильтров после навигации
     this.lastUpdateTime = 0;
@@ -1817,6 +1822,8 @@ class TerminalKitStatusDisplay {
     this.devicePopupText = '';
     this.needsFullRender = true; // Флаг для отрисовки рамок (только при полном рендере)
     this.lastHeaderText = ''; // Кэш заголовка для предотвращения лишних перерисовок
+    this.lastHeaderTime = 0; // Время последнего обновления времени в заголовке
+    this.lastHeaderTimeString = null; // Кэш строки времени для SSH режима
     this.selectionCheckInterval = null;
     this.filterIndex = 0; // Индекс выбранного фильтра
     this.filterRows = [];
@@ -2528,12 +2535,15 @@ class TerminalKitStatusDisplay {
       return; // Рендер уже запланирован
     }
     
+    // Зачем: Увеличиваем debounce для SSH сессий, чтобы снизить нагрузку на узкий канал
+    const debounceMs = LOW_BANDWIDTH_MODE ? 500 : 100; // 500мс для SSH, 100мс локально
+    
     this.pendingRender = true;
     this.renderDebounceTimer = setTimeout(() => {
       this.renderDebounceTimer = null;
       this.pendingRender = false;
       this.render();
-    }, 100); // Задержка 100мс - баланс между отзывчивостью и производительностью
+    }, debounceMs);
   }
   
   render() {
@@ -2620,8 +2630,25 @@ class TerminalKitStatusDisplay {
   
   renderHeader() {
     // Используем название локации из конструктора (загружено из PROJECT или env)
-    const status = this.isConnected ? '🟢 ПОДКЛЮЧЕНО' : '🔴 ОТКЛЮЧЕНО';
-    const time = new Date().toLocaleTimeString('ru-RU');
+    // Зачем: Визуально отмечаем включение LOW_BANDWIDTH_MODE жёлтым кругом вместо зелёного
+    let status;
+    if (this.isConnected) {
+      status = LOW_BANDWIDTH_MODE ? '🟡 ПОДКЛЮЧЕНО' : '🟢 ПОДКЛЮЧЕНО';
+    } else {
+      status = '🔴 ОТКЛЮЧЕНО';
+    }
+    
+    // Зачем: В SSH режиме обновляем время реже (каждые 5 секунд), чтобы снизить нагрузку на канал
+    const now = Date.now();
+    const timeUpdateInterval = LOW_BANDWIDTH_MODE ? 5000 : 1000; // 5 сек для SSH, 1 сек локально
+    const shouldUpdateTime = !this.lastHeaderTime || (now - this.lastHeaderTime) >= timeUpdateInterval;
+    
+    let time = this.lastHeaderTimeString || new Date().toLocaleTimeString('ru-RU');
+    if (shouldUpdateTime) {
+      time = new Date().toLocaleTimeString('ru-RU');
+      this.lastHeaderTime = now;
+      this.lastHeaderTimeString = time;
+    }
     
     // Зачем: Находим устройство типа "daemon" для вывода его id (только если включен флаг)
     let daemonId = null;
