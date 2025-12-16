@@ -1,0 +1,58 @@
+{
+  "timestamp": "2025-12-11T19:53:09.374Z",
+  "wsUri": "ws://192.168.88.4:3000",
+  "duration": "446.4",
+  "total": 8,
+  "successful": 8,
+  "failed": 0,
+  "results": [
+    {
+      "name": "Гипотеза 1: Каналы не запрашиваются при начальной загрузке",
+      "file": "test-hypothesis-1-channels-not-initial-load.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 2: Частичные обновления каналов без поля `bind`",
+      "file": "test-hypothesis-2-partial-updates-without-bind.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 3: Ограничительное условие дозапроса `bind`",
+      "file": "test-hypothesis-3-selected-actuator-restriction.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 4: Асинхронность загрузки связанных устройств",
+      "file": "test-hypothesis-4-async-linked-devices.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 5: Неэффективный поиск связанных устройств",
+      "file": "test-hypothesis-5-inefficient-device-search.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 6: Интеграционный тест цепочки проблем",
+      "file": "test-hypothesis-6-problem-chain.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 7: Результат в UI - показ \"(не привязан)\"",
+      "file": "test-hypothesis-7-ui-result.js",
+      "success": true,
+      "exitCode": 0
+    },
+    {
+      "name": "Гипотеза 8: Механизм повторного резолва",
+      "file": "test-hypothesis-8-reresolution.js",
+      "success": true,
+      "exitCode": 0
+    }
+  ]
+}
