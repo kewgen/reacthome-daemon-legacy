@@ -16,6 +16,8 @@ jspm_packages
 # Optional npm cache directory
 .npm
 .vscode
+# Environment variables
+.env
 # Optional REPL history
 .node_repl_history
 
