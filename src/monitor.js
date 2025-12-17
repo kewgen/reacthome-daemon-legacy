@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.54 (ручное управление версией)
+ * Версия: 1.0.55 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,10 +585,13 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.54';
+const VERSION = '1.0.55';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
+// Зачем: gate иногда префиксует сообщения sessionUUID (формат `${session}${json}`), нужно корректно распарсить JSON
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+let prefixedParseDroppedCount = 0; // Зачем: считаем непарсящиеся фреймы без спама в логах
 
 // Зачем: Определяем, что URI ведёт на внешний WebSocket gate (нужно для правильного рукопожатия)
 function isGateWebSocketUri(uri) {
@@ -606,6 +609,37 @@ function createWebSocket(uri) {
     return new WebSocket(uri, GATE_WS_PROTOCOL);
   }
   return new WebSocket(uri);
+}
+
+// Зачем: Поддерживаем plain JSON и prefixed `${sessionUUID}${json}` (совместимость с gate/ws-ssh), не меняя payload сообщений
+function parseGateMaybePrefixedJson(dataString) {
+  try {
+    return JSON.parse(dataString);
+  } catch (_) {
+    // Пробуем prefixed формат: первые 36 символов UUID, дальше JSON
+    if (typeof dataString === 'string' && dataString.length >= 36) {
+      const possibleSessionId = dataString.substring(0, 36);
+      if (UUID_REGEX.test(possibleSessionId)) {
+        const messageStr = dataString.substring(36);
+        try {
+          return JSON.parse(messageStr);
+        } catch (e) {
+          prefixedParseDroppedCount++;
+          // Логируем редко, чтобы не заспамить терминал
+          if (prefixedParseDroppedCount === 1 || prefixedParseDroppedCount % 50 === 0) {
+            const msg = e && e.message ? e.message : String(e);
+            console.error(`[WARN] Не удалось распарсить prefixed JSON (dropped=${prefixedParseDroppedCount}): ${msg}`);
+          }
+          return null;
+        }
+      }
+    }
+    prefixedParseDroppedCount++;
+    if (prefixedParseDroppedCount === 1 || prefixedParseDroppedCount % 50 === 0) {
+      console.error(`[WARN] Не удалось распарсить JSON (dropped=${prefixedParseDroppedCount}). Возможно, gate прислал не-JSON фрейм.`);
+    }
+    return null;
+  }
 }
 
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
@@ -1160,7 +1194,8 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
       try {
         const dataString = data.toString();
         const dataSize = Buffer.byteLength(dataString, 'utf8');
-        const message = JSON.parse(dataString);
+        const message = parseGateMaybePrefixedJson(dataString);
+        if (!message) return;
         
         // Логируем получение ответа
         logWebSocketResponseGlobal(message, dataSize);
@@ -5830,7 +5865,8 @@ async function main() {
           console.error('WebSocket message too large, ignoring');
           return;
         }
-        const message = JSON.parse(dataString);
+        const message = parseGateMaybePrefixedJson(dataString);
+        if (!message) return;
         
         // Логируем получение ответа
         logWebSocketResponseGlobal(message, dataSize);
