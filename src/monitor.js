@@ -3398,24 +3398,22 @@ class TerminalKitStatusDisplay {
     for (let i = 1; i <= doCount; i++) {
       const channelId = `${actuatorId}/do/${i}`;
       const channelData = this.deviceStates.get(channelId);
-      const channelState = channelData?.state || null;
+      const channelState = channelData?.state || channelData || channelData?.payload || null;
       
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
-      if (channelState && channelState.bind) {
-        linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
-        // Если не найдено по ID, пробуем найти по коду или имени
-        if (!linkedDevice && typeof channelState.bind === 'string') {
+      const bindValue = channelState?.bind || channelData?.bind;
+      if (bindValue) {
+        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        if (!linkedDevice && typeof bindValue === 'string') {
           linkedDevice = this.allDevices.find(d => 
-            d.code === channelState.bind || 
-            d.name === channelState.bind ||
-            d.id === channelState.bind
+            d.code === bindValue || 
+            d.name === bindValue ||
+            d.id === bindValue
           );
         }
-        // Если устройство не найдено, запрашиваем его через WebSocket
-        if (!linkedDevice && typeof channelState.bind === 'string') {
-          // Запрашиваем устройство через WebSocket (асинхронно)
-          this.requestMissingDevice(channelState.bind);
+        if (!linkedDevice && typeof bindValue === 'string') {
+          this.requestMissingDevice(bindValue);
         }
       }
       
@@ -3434,23 +3432,21 @@ class TerminalKitStatusDisplay {
     for (let i = 1; i <= dimCount; i++) {
       const channelId = `${actuatorId}/dim/${i}`;
       const channelData = this.deviceStates.get(channelId);
-      const channelState = channelData?.state || null;
+      const channelState = channelData?.state || channelData || channelData?.payload || null;
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
-      if (channelState && channelState.bind) {
-        linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
-        // Если не найдено по ID, пробуем найти по коду или имени
-        if (!linkedDevice && typeof channelState.bind === 'string') {
+      const bindValue = channelState?.bind || channelData?.bind;
+      if (bindValue) {
+        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        if (!linkedDevice && typeof bindValue === 'string') {
           linkedDevice = this.allDevices.find(d => 
-            d.code === channelState.bind || 
-            d.name === channelState.bind ||
-            d.id === channelState.bind
+            d.code === bindValue || 
+            d.name === bindValue ||
+            d.id === bindValue
           );
         }
-        // Если устройство не найдено, запрашиваем его состояние через WebSocket
-        if (!linkedDevice && typeof channelState.bind === 'string') {
-          // Запрашиваем состояние устройства, которое упоминается в bind, но не найдено
-          this.requestMissingDevice(channelState.bind);
+        if (!linkedDevice && typeof bindValue === 'string') {
+          this.requestMissingDevice(bindValue);
         }
       }
       
@@ -3469,24 +3465,21 @@ class TerminalKitStatusDisplay {
     for (let i = 1; i <= aoCount; i++) {
       const channelId = `${actuatorId}/ao/${i}`;
       const channelData = this.deviceStates.get(channelId);
-      const channelState = channelData?.state || null;
+      const channelState = channelData?.state || channelData || channelData?.payload || null;
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
-      if (channelState && channelState.bind) {
-        linkedDevice = this.allDevices.find(d => d.id === channelState.bind);
-        // Если не найдено по ID, пробуем найти по коду или имени
-        if (!linkedDevice && typeof channelState.bind === 'string') {
+      const bindValue = channelState?.bind || channelData?.bind;
+      if (bindValue) {
+        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        if (!linkedDevice && typeof bindValue === 'string') {
           linkedDevice = this.allDevices.find(d => 
-            d.code === channelState.bind || 
-            d.name === channelState.bind ||
-            d.id === channelState.bind
+            d.code === bindValue || 
+            d.name === bindValue ||
+            d.id === bindValue
           );
         }
-        // Если устройство не найдено, запрашиваем его через WebSocket
-        if (!linkedDevice && typeof channelState.bind === 'string') {
-          // Запрашиваем устройство через WebSocket (асинхронно)
-          this.requestMissingDevice(channelState.bind);
-        }
+        if (!linkedDevice && typeof bindValue === 'string') {
+          this.requestMissingDevice(bindValue);
       }
       
       // Метод 2: обратная привязка - ищем устройства, у которых bind указывает на этот канал
