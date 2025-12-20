@@ -465,6 +465,12 @@ const getDeviceRole = (id) => {
   const device = state.get(id);
   if (!device || typeof device !== 'object') return 'device';
   
+  // Зачем: в бою (и в init snapshot) скрипт может иметь пустой action[],
+  // но по смыслу это всё равно SCRIPT (особенно clock/schedule-скрипты вроде "Ежеминутник").
+  if (typeof device.type === 'string' && device.type.toLowerCase() === 'script') {
+    return 'script';
+  }
+
   // Скрипт: есть массив action
   if (Array.isArray(device.action) && device.action.length > 0) {
     return 'script';
@@ -892,6 +898,37 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
   
   // Если это событие скрипта (executed/last_execution)
   if (dbContext.isScriptEvent && dbContext.targetDevices) {
+    const deviceTriggersScript = (deviceId, scriptId) => {
+      // Зачем: наследовать trace_id от SOURCE-устройства можно только если оно действительно запускает этот скрипт.
+      // Иначе любой шумный датчик/кнопка в окне RECENT_EVENT_WINDOW_MS будет “прилипать” к чужим цепочкам.
+      if (!deviceId || !scriptId) return false;
+      const obj = state.get(deviceId);
+      if (!obj || typeof obj !== 'object') return false;
+
+      const stringKeys = ['onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose'];
+      for (const k of stringKeys) {
+        if (typeof obj[k] === 'string' && obj[k] === scriptId) return true;
+      }
+      const arrayKeys = ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff'];
+      for (const k of arrayKeys) {
+        const v = obj[k];
+        if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x === scriptId)) return true;
+      }
+
+      // Зачем: в бою клик/сработка может приходить по базовому устройству (MAC),
+      // а триггеры на скрипты лежат в DI `${deviceId}/di/1` (onClick/onHold/...).
+      if (typeof deviceId === 'string' && deviceId.includes(':') && !deviceId.includes('/')) {
+        const di = state.get(`${deviceId}/di/1`);
+        if (di && typeof di === 'object') {
+          for (const k of arrayKeys) {
+            const v = di[k];
+            if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x === scriptId)) return true;
+          }
+        }
+      }
+      return false;
+    };
+
     // Зачем: пытаемся “наследовать” trace_id от недавнего инициатора (schedule/timer/script),
     // чтобы цепочки из нескольких скриптов попадали в один trace.
     let inheritedTraceId = null;
@@ -901,11 +938,15 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
       const timeDiff = now - recent.timestamp;
       if (timeDiff < 0 || timeDiff > RECENT_EVENT_WINDOW_MS) continue;
       // Зачем: SOURCE (кнопка/датчик) часто не приходит с _context, поэтому recent.type будет "unknown".
-      // Чтобы собрать цепочку SOURCE → SCRIPT → ACTUATOR → CONSUMER, разрешаем наследование от "device"‑событий.
+      // Чтобы собрать цепочку SOURCE → SCRIPT → ACTUATOR → CONSUMER, разрешаем наследование от "device"‑событий,
+      // но только если устройство действительно триггерит текущий скрипт.
       const recentRole = getDeviceRole(recentId);
       const canInherit =
         (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') ||
-        (recentRole === 'device');
+        // Зачем: некоторые скрипты (например, clock/schedule) могут попасть в recentEventsCache с type='unknown',
+        // но по роли это всё равно SCRIPT — даём шанс склейке цепочек скрипт→скрипт.
+        (recentRole === 'script') ||
+        (recentRole === 'device' && deviceTriggersScript(recentId, id));
       if (!canInherit) continue;
       if (recent.timestamp > inheritedTs && recent.trace_id) {
         inheritedTs = recent.timestamp;
@@ -1018,18 +1059,6 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
           traceIdCache.set(id, recentEvent.trace_id);
           recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
           return recentEvent.trace_id;
-        }
-        
-        // Связь через site (оба устройства в одном site)
-        const deviceSite = Array.isArray(device.site) ? device.site : (device.site ? [device.site] : []);
-        const recentDeviceSite = Array.isArray(recentDevice.site) ? recentDevice.site : (recentDevice.site ? [recentDevice.site] : []);
-        if (deviceSite.length > 0 && recentDeviceSite.length > 0) {
-          const hasSameSite = deviceSite.some(s => recentDeviceSite.includes(s));
-          if (hasSameSite && timeDiff <= 500) { // Для site более строгое окно - 500ms
-            traceIdCache.set(id, recentEvent.trace_id);
-            recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
-            return recentEvent.trace_id;
-          }
         }
       }
     }
@@ -1272,7 +1301,22 @@ const handleActionSet = (message) => {
         return false;
       })();
 
-      return Boolean(hasStringTrigger || hasArrayTrigger);
+      if (hasStringTrigger || hasArrayTrigger) return true;
+
+      // Зачем: в бою событие клика может приходить по базовому устройству (MAC),
+      // а сами триггеры на скрипты лежат в DI канале (например, `${id}/di/1`).
+      // Чтобы не зависеть от наличия DI событий в логе, резолвим триггеры через init snapshot.
+      if (typeof id === 'string' && id.includes(':') && !id.includes('/')) {
+        const di = state.get(`${id}/di/1`);
+        if (di && typeof di === 'object') {
+          for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+            const v = di[k];
+            if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x)) return true;
+          }
+        }
+      }
+
+      return false;
     })();
 
     // Зачем: SOURCE фиксируем только по value (клик/сработка), не по humidity/temperature шуму.
@@ -1305,6 +1349,20 @@ const handleActionSet = (message) => {
         if (Array.isArray(v)) {
           for (const x of v) {
             if (typeof x === 'string' && x) triggerScriptIds.push(x);
+          }
+        }
+      }
+      // Зачем: см. выше — базовое устройство может не содержать onClick[], но DI содержит.
+      if (typeof id === 'string' && id.includes(':') && !id.includes('/')) {
+        const di = state.get(`${id}/di/1`);
+        if (di && typeof di === 'object') {
+          for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+            const v = di[k];
+            if (Array.isArray(v)) {
+              for (const x of v) {
+                if (typeof x === 'string' && x) triggerScriptIds.push(x);
+              }
+            }
           }
         }
       }
@@ -2048,6 +2106,9 @@ const connect = () => {
                                     'action', 'schedule', 'clock', 'timer', 'duration',
                                     // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
                                     'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
+                                    // Зачем: реальные кнопки/DI часто хранят триггеры как массивы скриптов (onClick/onHold/...).
+                                    // Эти поля приходят только в init snapshot (GET) и нужны, чтобы SOURCE склеивался со SCRIPT.
+                                    'onClick', 'onClick2', 'onHold', 'onOn', 'onOff',
                                     // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
                                     'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
               for (const field of fieldsToKeep) {

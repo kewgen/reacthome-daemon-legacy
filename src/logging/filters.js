@@ -198,6 +198,21 @@ const RULE_ACTUATOR_CHANGES = {
           if (hasTrigger) {
             return true;
           }
+
+          // Зачем: в бою “клик” может приходить по базовому устройству (MAC),
+          // а конфигурация триггеров лежит в DI канале `${id}/di/1`.
+          // Если DI содержит onClick/onHold — считаем базовое устройство SOURCE и логируем value.
+          if (typeof id === 'string' && id.includes(':') && !id.includes('/')) {
+            const di = state.get(`${id}/di/1`);
+            if (di && typeof di === 'object') {
+              for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+                const v = di[k];
+                if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x)) {
+                  return true;
+                }
+              }
+            }
+          }
         }
         
         return false; // Не актуатор и не потребитель - не логируем
