@@ -1183,6 +1183,9 @@ const handleActionSet = (message) => {
                           'action', 'schedule', 'clock', 'timer', 'duration',
                           // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
                           'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
+                          // Зачем: реальные DI/кнопки часто хранят триггеры как массивы скриптов (onClick/onHold/...),
+                          // а live ACTION_SET по value приходит без этих полей — их надо сохранить из init snapshot.
+                          'onClick', 'onClick2', 'onHold', 'onOn', 'onOff',
                           // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
                           'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
     for (const field of fieldsToKeep) {
@@ -1247,15 +1250,29 @@ const handleActionSet = (message) => {
     // должны открывать новый trace_id (SOURCE), иначе их легко “прилипить” к шумным соседним цепочкам.
     // Также это позволяет заранее прокинуть trace_id в связанные скрипты/targets.
     const isTriggerDevice = (() => {
-      if (!payload || typeof payload !== 'object') return false;
-      const hasTrigger =
-        (typeof payload.onDoppler === 'string' && payload.onDoppler) ||
-        (typeof payload.onTrue === 'string' && payload.onTrue) ||
-        (typeof payload.onFalse === 'string' && payload.onFalse) ||
-        (typeof payload.onChange === 'string' && payload.onChange) ||
-        (typeof payload.onOpen === 'string' && payload.onOpen) ||
-        (typeof payload.onClose === 'string' && payload.onClose);
-      return Boolean(hasTrigger);
+      // Зачем: в бою live ACTION_SET обычно несёт только {value,timestamp}, а связи onDoppler/onClick/... лежат в init snapshot.
+      // Поэтому проверяем не только payload, но и агрегированный newState (oldState + payload).
+      const src = (newState && typeof newState === 'object') ? newState : payload;
+      if (!src || typeof src !== 'object') return false;
+
+      const hasStringTrigger =
+        (typeof src.onDoppler === 'string' && src.onDoppler) ||
+        (typeof src.onTrue === 'string' && src.onTrue) ||
+        (typeof src.onFalse === 'string' && src.onFalse) ||
+        (typeof src.onChange === 'string' && src.onChange) ||
+        (typeof src.onOpen === 'string' && src.onOpen) ||
+        (typeof src.onClose === 'string' && src.onClose);
+
+      const hasArrayTrigger = (() => {
+        // Зачем: реальные DI/кнопки часто хранят скрипты как массивы: onClick: ["<scriptId>", ...]
+        for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+          const v = src[k];
+          if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x)) return true;
+        }
+        return false;
+      })();
+
+      return Boolean(hasStringTrigger || hasArrayTrigger);
     })();
 
     // Зачем: SOURCE фиксируем только по value (клик/сработка), не по humidity/temperature шуму.
@@ -1279,8 +1296,17 @@ const handleActionSet = (message) => {
     // Это снижает зависимость от порядка прихода WS сообщений и окна RECENT_EVENT_WINDOW_MS.
     if (isTriggerValueEvent) {
       const triggerScriptIds = [];
+      const src = (newState && typeof newState === 'object') ? newState : payload;
       for (const k of ['onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose']) {
-        if (typeof payload[k] === 'string' && payload[k]) triggerScriptIds.push(payload[k]);
+        if (src && typeof src[k] === 'string' && src[k]) triggerScriptIds.push(src[k]);
+      }
+      for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+        const v = src ? src[k] : null;
+        if (Array.isArray(v)) {
+          for (const x of v) {
+            if (typeof x === 'string' && x) triggerScriptIds.push(x);
+          }
+        }
       }
       for (const scriptId of triggerScriptIds) {
         traceIdCache.set(scriptId, traceId);

@@ -29,6 +29,9 @@ function getEventRole(event) {
   // Зачем: кнопки/датчики‑триггеры должны учитываться как SOURCE в цепочке трассировки.
   // В логах они часто выглядят как param=value и могут иметь extra.actuator_*,
   // но по смыслу это инициатор (S4 Лоджия / Click).
+  if (event && event.param === 'value' && typeof event.id === 'string' && event.id.includes('/di/')) {
+    return 'SOURCE';
+  }
   if (event && event.param === 'value' && event.device) {
     const t = event.device.type;
     if (t === 'DOPPLER' || t === 'doppler') return 'SOURCE';

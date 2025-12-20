@@ -187,7 +187,14 @@ const RULE_ACTUATOR_CHANGES = {
             (typeof device.onFalse === 'string' && device.onFalse) ||
             (typeof device.onChange === 'string' && device.onChange) ||
             (typeof device.onOpen === 'string' && device.onOpen) ||
-            (typeof device.onClose === 'string' && device.onClose);
+            (typeof device.onClose === 'string' && device.onClose) ||
+            // Зачем: в бою кнопки/DI могут хранить скрипты-триггеры массивами (onClick/onHold/...),
+            // это тоже SOURCE и должно логироваться по value.
+            (Array.isArray(device.onClick) && device.onClick.some((x) => typeof x === 'string' && x)) ||
+            (Array.isArray(device.onClick2) && device.onClick2.some((x) => typeof x === 'string' && x)) ||
+            (Array.isArray(device.onHold) && device.onHold.some((x) => typeof x === 'string' && x)) ||
+            (Array.isArray(device.onOn) && device.onOn.some((x) => typeof x === 'string' && x)) ||
+            (Array.isArray(device.onOff) && device.onOff.some((x) => typeof x === 'string' && x));
           if (hasTrigger) {
             return true;
           }
