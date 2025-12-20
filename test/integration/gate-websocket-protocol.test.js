@@ -52,6 +52,10 @@ function isGateWebSocketUri(uri) {
 }
 
 test('Gate WebSocket: подключение и LIST запрос', { timeout: 10000 }, async () => {
+  if (process.env.RUN_INTEGRATION_NETWORK !== '1') {
+    console.log('⚠️  Пропуск теста: RUN_INTEGRATION_NETWORK!=1 (сетевой тест)');
+    return;
+  }
   if (!isGateWebSocketUri(GATE_URL)) {
     console.log('⚠️  Пропуск теста: GATE_URL не указывает на Gate WebSocket');
     return;
@@ -96,6 +100,10 @@ test('Gate WebSocket: подключение и LIST запрос', { timeout: 1
 });
 
 test('Gate WebSocket: GET запрос и ACTION_SET ответ', { timeout: 15000 }, async () => {
+  if (process.env.RUN_INTEGRATION_NETWORK !== '1') {
+    console.log('⚠️  Пропуск теста: RUN_INTEGRATION_NETWORK!=1 (сетевой тест)');
+    return;
+  }
   if (!isGateWebSocketUri(GATE_URL)) {
     console.log('⚠️  Пропуск теста: GATE_URL не указывает на Gate WebSocket');
     return;
@@ -149,6 +157,10 @@ test('Gate WebSocket: GET запрос и ACTION_SET ответ', { timeout: 150
 });
 
 test('Gate WebSocket: проверка формата сообщений (UUID префикс)', { timeout: 10000 }, async () => {
+  if (process.env.RUN_INTEGRATION_NETWORK !== '1') {
+    console.log('⚠️  Пропуск теста: RUN_INTEGRATION_NETWORK!=1 (сетевой тест)');
+    return;
+  }
   if (!isGateWebSocketUri(GATE_URL)) {
     console.log('⚠️  Пропуск теста: GATE_URL не указывает на Gate WebSocket');
     return;

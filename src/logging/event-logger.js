@@ -29,6 +29,7 @@ const {
 const filters = require('./filters');
 const opensearch = require('./opensearch');
 const { ensureLoggerPid } = require('./event-meta'); // Зачем: единая точка заполнения logger_pid + юнит‑тесты
+const { getScriptTargetDeviceIds } = require('./script-targets'); // Зачем: корректный резолв onTrue/onFalse и вложенных скриптов
 
 // Зачем: определение типов устройств-потребителей для добавления признака consumer в события
 // Алгоритм взят из src/monitor.js
@@ -480,54 +481,7 @@ const getDeviceRole = (id) => {
 // Получение списка целевых устройств из action массива скрипта
 // Зачем: определение какие устройства будут изменены скриптом для построения трассировки
 const getScriptTargetDevices = (scriptId) => {
-  const script = state.get(scriptId);
-  if (!script || !Array.isArray(script.action)) return new Set();
-  
-  const targetDevices = new Set();
-  
-  // Зачем: проходим по всем действиям скрипта и извлекаем ID целевых устройств
-  for (const actionId of script.action) {
-    const actionObj = state.get(actionId);
-    if (!actionObj || typeof actionObj !== 'object') continue;
-    
-    // Action object может содержать разные поля в зависимости от типа действия
-    // Общие поля: id (целевое устройство), ref (связанное устройство), payload
-    
-    // Зачем: получаем ID целевого устройства из действия
-    if (actionObj.id && typeof actionObj.id === 'string') {
-      targetDevices.add(actionObj.id);
-    }
-    
-    // Зачем: для некоторых действий целевое устройство в поле ref
-    if (actionObj.ref && typeof actionObj.ref === 'string') {
-      targetDevices.add(actionObj.ref);
-    }
-    
-    // Зачем: для ACTION_ON/OFF/TOGGLE целевое устройство в payload.id
-    if (actionObj.payload && typeof actionObj.payload === 'object') {
-      if (actionObj.payload.id && typeof actionObj.payload.id === 'string') {
-        targetDevices.add(actionObj.payload.id);
-      }
-    }
-    
-    // Зачем: для действий с site - добавляем все устройства в site
-    if (Array.isArray(actionObj.site)) {
-      for (const siteId of actionObj.site) {
-        const siteObj = state.get(siteId);
-        // Получаем устройства из site (обычно в полях device, do, dim)
-        if (siteObj && typeof siteObj === 'object') {
-          const siteDevices = [
-            ...(siteObj.device || []),
-            ...(siteObj.do || []),
-            ...(siteObj.dim || [])
-          ];
-          siteDevices.forEach(devId => targetDevices.add(devId));
-        }
-      }
-    }
-  }
-  
-  return targetDevices;
+  return getScriptTargetDeviceIds(state, scriptId);
 };
 
 // Поиск скриптов содержащих устройство (с использованием обратного индекса)
