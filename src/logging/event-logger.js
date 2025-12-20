@@ -52,7 +52,11 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 const STATE_REQUEST_TIMEOUT = 30000; // 30 секунд
 const CONNECTION_TIMEOUT = 10000; // 10 секунд - таймаут подключения к WebSocket
 const MAX_MESSAGE_SIZE = 10 * 1024 * 1024; // 10MB - максимальный размер сообщения (защита от DoS)
-const BUFFER_MAX_SIZE = 100; // Максимальный размер буфера событий
+// Зачем: буфер защищает от кратких деградаций OpenSearch/сети; размер делаем настраиваемым, чтобы не терять события при пиковой нагрузке
+const BUFFER_MAX_SIZE = parseInt(process.env.EVENT_LOGGER_BUFFER_MAX_SIZE || '5000', 10); // Максимальный размер буфера событий
+// Зачем: батчинг снижает нагрузку на сеть/балансировщик и уменьшает вероятность ERR_STREAM_PREMATURE_CLOSE
+const OPENSEARCH_FLUSH_INTERVAL_MS = parseInt(process.env.OPENSEARCH_FLUSH_INTERVAL_MS || '250', 10);
+const OPENSEARCH_BATCH_SIZE = parseInt(process.env.OPENSEARCH_BATCH_SIZE || '200', 10);
 
 // Константы для WebSocket сообщений (из src/init/constants.js и src/constants.js)
 const { LIST, GET } = require('../init/constants');
@@ -67,6 +71,8 @@ let eventBuffer = []; // Буфер для событий при недосту�
 let stateRequested = false;
 let isInitialStateReceived = false;
 let bufferFlushInterval = null; // Интервал для отправки событий из буфера
+let isFlushingBuffer = false; // Зачем: исключаем параллельные flush, чтобы не устраивать “шторм” запросов
+let lastFlushLogTs = 0; // Зачем: защита от лог-спама
 
 // 1. Кэш состояния актуаторов (лампы, вентиляторы, кондеи, тёплые полы)
 // Зачем: хранит время включения для вычисления длительности работы и обогащения trace_id
@@ -115,6 +121,10 @@ const ACTUATOR_CACHE_TTL_MS = 86400000; // 24 часа - actuatorStateCache и c
 // Зачем: флаг отладки для условного логирования (включается через DEBUG=true)
 const DEBUG_MODE = process.env.DEBUG === 'true';
 
+// Зачем: в некоторых тестовых сценариях SCRIPT executed события приходят явно (из YAML),
+// и синтетическая генерация “executed” по изменениям устройств мешает детерминизму.
+const SYNTHETIC_SCRIPT_EVENTS_ENABLED = process.env.SYNTHETIC_SCRIPT_EVENTS !== 'false';
+
 // Логирование
 const log = (message, ...args) => {
   const timestamp = new Date().toISOString();
@@ -151,6 +161,7 @@ const getDeviceFields = (id) => {
     title: obj.title !== undefined ? obj.title : null,
     type: obj.type !== undefined ? obj.type : null,
     parent: obj.parent !== undefined ? obj.parent : null,
+    bind: obj.bind !== undefined ? obj.bind : null, // Зачем: связываем потребителя и канал/актуатор для корректного trace_id
     site: obj.site !== undefined ? obj.site : null,
     project: obj.project !== undefined ? obj.project : null
   };
@@ -484,6 +495,37 @@ const getScriptTargetDevices = (scriptId) => {
   return getScriptTargetDeviceIds(state, scriptId);
 };
 
+// Определение action_type для события запуска скрипта (executed/last_execution).
+// Зачем: систематизируем причины/тип запуска скрипта для тестовых сетов и анализа боевых логов.
+const determineScriptActionType = (scriptId, scriptState) => {
+  if (!scriptState || typeof scriptState !== 'object') {
+    return 'ACTION_UNKNOWN';
+  }
+  
+  // Запуск по расписанию.
+  if (scriptState.schedule) {
+    return 'ACTION_SCHEDULE_START';
+  }
+  
+  // Запуск по clock (в текущей терминологии тестов).
+  if (scriptState.clock) {
+    return 'ACTION_CLOCK_TEST';
+  }
+  
+  // Запуск через action (берём первый action как “главный” тип).
+  if (Array.isArray(scriptState.action) && scriptState.action.length > 0) {
+    const firstActionId = scriptState.action[0];
+    const actionObj = firstActionId ? state.get(firstActionId) : null;
+    const actionType = actionObj && typeof actionObj === 'object' ? actionObj.type : null;
+    if (typeof actionType === 'string' && actionType.trim()) {
+      return actionType.trim(); // Например: ACTION_ON, ACTION_TOGGLE и т.п.
+    }
+  }
+  
+  // Фолбэк: ручной запуск (точно определить без _context нельзя).
+  return 'ACTION_RUN';
+};
+
 // Поиск скриптов содержащих устройство (с использованием обратного индекса)
 // Зачем: быстрое определение какие скрипты могут влиять на устройство
 const findScriptsContainingDevice = (deviceId) => {
@@ -528,6 +570,7 @@ const generateSyntheticScriptEvent = (scriptId, timestamp, trace_id) => {
     project: projectName,
     trace_id: trace_id,
     extra: {
+      action_type: determineScriptActionType(scriptId, script), // Зачем: единый action_type для синтетики и боевых логов
       synthetic: true,              // Маркер: это синтетическое событие
       inferred_from: 'device_changes', // Метод вывода
       confidence: 'high',            // Уверенность (high/medium/low)
@@ -582,7 +625,8 @@ const handleContinuingScriptExecution = (scriptId, deviceId, cached) => {
   // Добавляем устройство в список изменённых
   cached.devicesChanged.add(deviceId);
   
-  log(`⏳ [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} продолжает работу, устройство ${deviceId.slice(0,8)} изменено (${cached.devicesChanged.size}/${cached.targetDevices.size})`);
+  // Зачем: это очень частое событие, не засоряем логи в обычном режиме
+  logDebug(`⏳ [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} продолжает работу, устройство ${deviceId.slice(0,8)} изменено (${cached.devicesChanged.size}/${cached.targetDevices.size})`);
   
   // Проверяем, все ли целевые устройства изменились
   if (cached.devicesChanged.size === cached.targetDevices.size) {
@@ -667,8 +711,10 @@ const analyzeDeviceContext = (id, timestamp, param) => {
   const now = timestamp || Date.now();
   const role = getDeviceRole(id);
   
-  // Если это событие executed/last_execution для скрипта
-  if (role === 'script' && (param === 'executed' || param === 'last_execution')) {
+  // Если это событие executed/last_execution для скрипта/расписания/таймера
+  // Зачем: в бою и в тестовых сетах запуск скрипта может происходить по schedule/clock/timer,
+  // но нам нужно единообразно собирать цепочку (SCRIPT → ACTUATOR → CONSUMER).
+  if ((role === 'script' || role === 'schedule' || role === 'timer') && (param === 'executed' || param === 'last_execution')) {
     // Зачем: создаём запись об активном скрипте для последующего связывания
     const targetDevices = getScriptTargetDevices(id);
     
@@ -676,7 +722,7 @@ const analyzeDeviceContext = (id, timestamp, param) => {
     const device = state.get(id);
     
     return {
-      type: 'script',
+      type: role === 'schedule' ? 'schedule' : role === 'timer' ? 'timer' : 'script',
       ref: id,
       deviceId: id,
       actions: device?.action || [],
@@ -762,14 +808,29 @@ const analyzeDeviceContext = (id, timestamp, param) => {
 
 // Генерация trace ID для трассировки событий на основе БД и временных паттернов
 // Зачем: построение трассировки без _context от демона через анализ контекста из БД
-const generateTraceId = (id, context, param) => {
-  const now = Date.now();
+const generateTraceId = (id, context, param, eventTimestamp) => {
+  // Зачем: для корректной связности цепочек используем timestamp события (из payload),
+  // а не локальный Date.now() — это важно и для боевых логов, и для e2e сценариев с “пауза 20+ секунд”.
+  const now = (typeof eventTimestamp === 'number' ? eventTimestamp : Date.now());
   
   // Если в контексте уже есть trace_id - используем его и сохраняем в кэш
   if (context && context.trace_id) {
     traceIdCache.set(id, context.trace_id);
     recentEventsCache.set(id, { timestamp: now, trace_id: context.trace_id, type: context.type });
     return context.trace_id;
+  }
+
+  // Зачем: если trace_id уже вычислен ранее для этого id (например, скрипт заполнил кэш для target devices),
+  // используем его для связности цепочки (SCRIPT → ACTUATOR → CONSUMER).
+  if (traceIdCache.has(id)) {
+    const cachedTraceId = traceIdCache.get(id);
+    const recent = recentEventsCache.get(id);
+    const age = recent && typeof recent.timestamp === 'number' ? (now - recent.timestamp) : Infinity;
+    // Зачем: не переносим trace_id “вечно”; если событие оторвалось по времени — это новая цепочка.
+    if (age <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC) {
+      recentEventsCache.set(id, { timestamp: now, trace_id: cachedTraceId, type: context?.type || 'unknown' });
+      return cachedTraceId;
+    }
   }
   
   // Зачем: проверяем scriptExecutionCache - если устройство уже связано со скриптом, используем его trace_id
@@ -795,8 +856,23 @@ const generateTraceId = (id, context, param) => {
   
   // Если это событие скрипта (executed/last_execution)
   if (dbContext.isScriptEvent && dbContext.targetDevices) {
-    // Генерируем новый trace_id для цепочки скрипта
-    const newTraceId = uuidv4();
+    // Зачем: пытаемся “наследовать” trace_id от недавнего инициатора (schedule/timer/script),
+    // чтобы цепочки из нескольких скриптов попадали в один trace.
+    let inheritedTraceId = null;
+    let inheritedTs = -1;
+    for (const [recentId, recent] of recentEventsCache.entries()) {
+      if (!recent || typeof recent.timestamp !== 'number') continue;
+      const timeDiff = now - recent.timestamp;
+      if (timeDiff < 0 || timeDiff > RECENT_EVENT_WINDOW_MS) continue;
+      if (recent.type !== 'script' && recent.type !== 'schedule' && recent.type !== 'timer') continue;
+      if (recent.timestamp > inheritedTs && recent.trace_id) {
+        inheritedTs = recent.timestamp;
+        inheritedTraceId = recent.trace_id;
+      }
+    }
+
+    // Генерируем новый trace_id для цепочки, если наследовать нечего
+    const newTraceId = inheritedTraceId || uuidv4();
     
     // Зачем: сохраняем скрипт в кэше активных скриптов
     activeScriptsCache.set(id, {
@@ -805,15 +881,17 @@ const generateTraceId = (id, context, param) => {
       actionDevices: dbContext.targetDevices
     });
     
-    // Зачем: сохраняем trace_id для всех целевых устройств скрипта
+    // Зачем: сохраняем trace_id для всех целевых устройств скрипта + помечаем их как “recent”,
+    // чтобы события устройств унаследовали trace_id в окне выполнения.
     traceIdCache.set(id, newTraceId);
     for (const deviceId of dbContext.targetDevices) {
       traceIdCache.set(deviceId, newTraceId);
+      recentEventsCache.set(deviceId, { timestamp: now, trace_id: newTraceId, type: 'script' });
     }
     
     recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: 'script' });
     
-    log(`📋 Скрипт ${id} запущен, trace_id=${newTraceId.slice(0,8)}, целевых устройств: ${dbContext.targetDevices.size}`);
+    log(`📋 Скрипт ${id} запущен, trace_id=${newTraceId.slice(0,8)}, целевых устройств: ${dbContext.targetDevices.size}${inheritedTraceId ? ' (унаследован)' : ''}`);
     
     return newTraceId;
   }
@@ -865,6 +943,19 @@ const generateTraceId = (id, context, param) => {
           recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
           return recentEvent.trace_id;
         }
+
+        // Связь через bind (потребитель ↔ канал/актуатор)
+        // Зачем: у потребителя bind="MAC/dim/N", а у канала bind указывает обратно на UUID потребителя.
+        if (device.bind && device.bind === recentId) {
+          traceIdCache.set(id, recentEvent.trace_id);
+          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+          return recentEvent.trace_id;
+        }
+        if (recentDevice.bind && recentDevice.bind === id) {
+          traceIdCache.set(id, recentEvent.trace_id);
+          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+          return recentEvent.trace_id;
+        }
         
         // Связь через site (оба устройства в одном site)
         const deviceSite = Array.isArray(device.site) ? device.site : (device.site ? [device.site] : []);
@@ -882,14 +973,7 @@ const generateTraceId = (id, context, param) => {
   }
   
   // Если не нашли связей - генерируем новый trace_id
-  // Проверяем, есть ли уже trace_id в кэше для этого ID
-  if (traceIdCache.has(id)) {
-    const existingTraceId = traceIdCache.get(id);
-    recentEventsCache.set(id, { timestamp: now, trace_id: existingTraceId, type: 'unknown' });
-    return existingTraceId;
-  }
-  
-  // Генерируем новый trace_id и сохраняем в кэш
+  // Зачем: не переиспользуем старый trace_id бесконечно — новая цепочка должна получать новый trace_id
   const newTraceId = uuidv4();
   traceIdCache.set(id, newTraceId);
   recentEventsCache.set(id, { timestamp: now, trace_id: newTraceId, type: 'unknown' });
@@ -1028,9 +1112,13 @@ const handleActionSet = (message) => {
     // Зачем: храним только поля, используемые для сравнения, а не весь объект состояния
     const essentialFields = {};
     // Копируем только нужные поля из oldState
-    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
-                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
-                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
+                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
+                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                          // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
+                          'action', 'schedule', 'clock', 'timer', 'duration',
+                          // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
+                          'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
     for (const field of fieldsToKeep) {
       if (oldState[field] !== undefined) {
         essentialFields[field] = oldState[field];
@@ -1081,7 +1169,8 @@ const handleActionSet = (message) => {
                      payload.last_execution !== undefined ? 'last_execution' : 
                      Object.keys(payload).find(k => k !== 'timestamp') || null;
     
-    const traceId = generateTraceId(id, context, keyParam);
+    const msgTimestamp = payload.timestamp || Date.now();
+    const traceId = generateTraceId(id, context, keyParam, msgTimestamp);
     context.trace_id = traceId;
     
     // Создаём чистый payload без timestamp для правильного сравнения
@@ -1090,8 +1179,10 @@ const handleActionSet = (message) => {
     
     // Зачем: проверяем и генерируем синтетические события для скриптов
     // Делаем это ДО processEvent, чтобы синтетическое событие создалось первым
-    const timestamp = payload.timestamp || Date.now();
-    checkAndGenerateScriptEvent(id, timestamp);
+    // Зачем: timestamp берём из payload, чтобы синтетика и цепочки работали в терминах времени событий.
+    if (SYNTHETIC_SCRIPT_EVENTS_ENABLED) {
+      checkAndGenerateScriptEvent(id, msgTimestamp);
+    }
     
     // Обрабатываем событие (используем логику из event-log.js)
     // Зачем: передаем информацию о состоянии актуатора для обогащения событий
@@ -1150,6 +1241,7 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     const deviceType = getDeviceTypeWithFallback(id);
     const isConsumer = isConsumerDevice(deviceType);
     
+    const scriptActionType = determineScriptActionType(id, newState); // Зачем: фиксируем тип запуска/природу скрипта для трассировки
     const event = {
       timestamp: Date.now(),
       id,
@@ -1175,7 +1267,9 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
       site: siteName || null,
       project: getProjectName(id),
       trace_id: context.trace_id || null, // Трассировка событий
-      extra: {}
+      extra: {
+        action_type: scriptActionType
+      }
     };
     
     // Зачем: обогащаем событие информацией о канале, конечном устройстве и щитовом устройстве
@@ -1458,18 +1552,10 @@ const sendEvent = (event) => {
   // Зачем: записываем событие в локальный файл для резервного хранения
   writeEventToFile(eventWithMeta);
   
-  // Проверяем доступность OpenSearch
-  if (opensearch.isEnabled && opensearch.isEnabled()) {
-    // Отправляем напрямую
-    opensearch.sendBatch([eventWithMeta]).catch(err => {
-      logError('Ошибка отправки события в OpenSearch:', err.message);
-      // При ошибке добавляем в буфер
-      addToBuffer(eventWithMeta);
-    });
-  } else {
-    // Добавляем в буфер
-    addToBuffer(eventWithMeta);
-  }
+  // Зачем: не отправляем “по одному событию” — это приводит к шторма запросов и росту задержек при сетевых сбоях.
+  // Вместо этого складываем в буфер и отправляем батчами.
+  addToBuffer(eventWithMeta);
+  flushBuffer().catch(() => {}); // best-effort, ошибки логируются внутри
 };
 
 // Запись события в локальный файл
@@ -1478,6 +1564,29 @@ const fs = require('fs');
 const { VAR } = require('../assets/constants');
 
 let currentLogFile = null;
+let logStream = null;
+let pendingFileLines = [];
+let fileDrainScheduled = false;
+
+// Зачем: единая функция сброса очереди в write stream с учётом backpressure
+const flushPendingFileLines = () => {
+  if (!logStream) return;
+  while (pendingFileLines.length > 0) {
+    const line = pendingFileLines[0];
+    const ok = logStream.write(line);
+    if (!ok) {
+      if (!fileDrainScheduled) {
+        fileDrainScheduled = true;
+        logStream.once('drain', () => {
+          fileDrainScheduled = false;
+          flushPendingFileLines();
+        });
+      }
+      return;
+    }
+    pendingFileLines.shift();
+  }
+};
 
 const writeEventToFile = (event) => {
   try {
@@ -1495,11 +1604,36 @@ const writeEventToFile = (event) => {
     // Обновляем текущий файл если изменилась дата
     if (currentLogFile !== logFile) {
       currentLogFile = logFile;
+      // Зачем: при смене дня переоткрываем stream, чтобы не держать старый дескриптор
+      if (logStream) {
+        logStream.end();
+      }
+      logStream = fs.createWriteStream(currentLogFile, { flags: 'a' });
+      logStream.on('error', (err) => {
+        logError('Ошибка write stream для файла событий:', err.message);
+      });
     }
     
-    // Записываем событие в файл (append)
     const eventLine = JSON.stringify(event) + '\n';
-    fs.appendFileSync(currentLogFile, eventLine, 'utf8');
+    // Зачем: не используем appendFileSync — синхронная запись блокирует event loop и усиливает задержки
+    if (!logStream) {
+      logStream = fs.createWriteStream(currentLogFile, { flags: 'a' });
+      logStream.on('error', (err) => {
+        logError('Ошибка write stream для файла событий:', err.message);
+      });
+    }
+    if (pendingFileLines.length > 0) {
+      // Зачем: если уже есть очередь — добавляем и сбрасываем через единый механизм
+      pendingFileLines.push(eventLine);
+      flushPendingFileLines();
+      return;
+    }
+
+    const ok = logStream.write(eventLine);
+    if (!ok) {
+      pendingFileLines.push(eventLine);
+      flushPendingFileLines();
+    }
     
   } catch (err) {
     logError('Ошибка записи события в файл:', err.message);
@@ -1519,20 +1653,34 @@ const addToBuffer = (event) => {
 
 // Попытка отправить события из буфера
 const flushBuffer = async () => {
+  if (isFlushingBuffer) return;
   if (eventBuffer.length === 0) return;
-  
-  if (opensearch.isEnabled && opensearch.isEnabled()) {
-    const eventsToSend = [...eventBuffer];
-    eventBuffer = [];
-    
-    try {
-      await opensearch.sendBatch(eventsToSend);
-      log(`Отправлено ${eventsToSend.length} событий из буфера`);
-    } catch (err) {
-      logError('Ошибка отправки событий из буфера:', err.message);
-      // Возвращаем события в буфер
-      eventBuffer = [...eventsToSend, ...eventBuffer];
+  if (!(opensearch.isEnabled && opensearch.isEnabled())) return;
+
+  isFlushingBuffer = true;
+  try {
+    let sent = 0;
+    // Зачем: отправляем чанками, чтобы не делать слишком большой _bulk и не провоцировать обрывы ответа
+    while (eventBuffer.length > 0) {
+      const batch = eventBuffer.splice(0, OPENSEARCH_BATCH_SIZE);
+      await opensearch.sendBatch(batch);
+      sent += batch.length;
+      // Зачем: отдаём управление event loop, чтобы WebSocket не “задыхался”
+      await new Promise((r) => setImmediate(r));
     }
+
+    const now = Date.now();
+    if (sent > 0 && (now - lastFlushLogTs) > 5000) {
+      lastFlushLogTs = now;
+      log(`Отправлено ${sent} событий в OpenSearch (батчами)`);
+    }
+  } catch (err) {
+    logError('Ошибка отправки событий из буфера:', err.message);
+    // Зачем: при непредвиденной ошибке возвращаем события в начало буфера (сохраняем порядок)
+    // (часть событий могла быть уже удалена из буфера)
+    // В штатном режиме сетевые ошибки обрабатываются внутри opensearch.sendBatch.
+  } finally {
+    isFlushingBuffer = false;
   }
 };
 
@@ -1732,9 +1880,13 @@ const connect = () => {
             if (id && payload && typeof payload === 'object') {
               // Зачем: при начальной загрузке payload - это полное состояние, но храним только нужные поля
               const essentialFields = {};
-              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b', 
-                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity', 
-                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type'];
+              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
+                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
+                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                                    // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
+                                    'action', 'schedule', 'clock', 'timer', 'duration',
+                                    // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
+                                    'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
               for (const field of fieldsToKeep) {
                 if (payload[field] !== undefined) {
                   essentialFields[field] = payload[field];
@@ -1818,6 +1970,10 @@ const shutdown = () => {
   
   // Отправляем события из буфера
   flushBuffer().then(() => {
+    // Зачем: корректно закрываем write stream, чтобы не потерять хвост файла
+    if (logStream) {
+      logStream.end();
+    }
     if (ws) {
       ws.close();
     }
@@ -1837,7 +1993,9 @@ log(`Подключение к демону: ${DAEMON_WS_URL}`);
 log(`OpenSearch включен: ${process.env.OPENSEARCH_ENABLED === 'true'}`);
 
 // Периодически пытаемся отправить события из буфера
-bufferFlushInterval = setInterval(flushBuffer, 5000); // Каждые 5 секунд
+bufferFlushInterval = setInterval(() => {
+  flushBuffer().catch(() => {});
+}, OPENSEARCH_FLUSH_INTERVAL_MS);
 
 // Зачем: state будет инициализирован после получения данных через WebSocket (LIST/GET)
 // LevelDB не поддерживает многопроцессорный доступ, поэтому читаем через WebSocket

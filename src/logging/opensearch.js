@@ -10,6 +10,10 @@ const OPENSEARCH_URL = process.env.OPENSEARCH_URL || '';
 const OPENSEARCH_USER = process.env.OPENSEARCH_USER || '';
 const OPENSEARCH_PASSWORD = process.env.OPENSEARCH_PASSWORD || '';
 const OPENSEARCH_INDEX_PREFIX = process.env.OPENSEARCH_INDEX_PREFIX || 'reacthome-events';
+// Зачем: таймауты защищают от “висящих” запросов и накопления очереди при проблемах сети/балансировщика
+const OPENSEARCH_REQUEST_TIMEOUT_MS = parseInt(process.env.OPENSEARCH_REQUEST_TIMEOUT_MS || '15000', 10);
+// Зачем: ограничиваем частоту ensureIndexMapping, иначе при большом потоке событий появляются лишние HEAD/PUT на _mapping
+const OPENSEARCH_MAPPING_TTL_MS = parseInt(process.env.OPENSEARCH_MAPPING_TTL_MS || String(10 * 60 * 1000), 10); // 10 минут
 // Расшифровка пути с ~ (если указан)
 const expandPath = (filePath) => {
   if (filePath && filePath.startsWith('~')) {
@@ -56,6 +60,17 @@ const getHttpsAgent = () => {
   return httpsAgent;
 };
 
+// Зачем: единая обёртка над fetch с таймаутом (node-fetch v2 требует AbortController)
+const fetchWithTimeout = async (url, options = {}, timeoutMs = OPENSEARCH_REQUEST_TIMEOUT_MS) => {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } finally {
+    clearTimeout(timeoutId);
+  }
+};
+
 // Конфигурация экспоненциального backoff
 const BACKOFF_INITIAL_DELAY = parseInt(process.env.OPENSEARCH_BACKOFF_INITIAL_DELAY || '1000'); // 1 секунда
 const BACKOFF_MAX_DELAY = parseInt(process.env.OPENSEARCH_BACKOFF_MAX_DELAY || '60000'); // 60 секунд
@@ -64,8 +79,10 @@ const BACKOFF_BASE = parseFloat(process.env.OPENSEARCH_BACKOFF_BASE || '2'); // 
 
 // Состояние
 let opensearchFailedBatch = [];
-const OPENSEARCH_FAILED_BATCH_SIZE = 100;
+const OPENSEARCH_FAILED_BATCH_SIZE = parseInt(process.env.OPENSEARCH_FAILED_BATCH_SIZE || '100', 10); // Зачем: настраиваемый лимит, чтобы не терять события при кратких деградациях
 let isOpensearchAvailable = true;
+// Зачем: защита от “шторма” параллельных sendBatch — при большом потоке и сетевых ошибках это резко увеличивает задержку
+let isSending = false;
 
 // Состояние повторных попыток
 const retryState = {
@@ -75,6 +92,14 @@ const retryState = {
   nextRetryTime: null,
   isRetrying: false,
   recoveryScheduled: false
+};
+
+// Зачем: кеш успешной ensureIndexMapping по имени индекса (уменьшаем сетевую нагрузку)
+const ensuredIndexCache = new Map(); // indexName -> ts
+const shouldEnsureIndex = (indexName) => {
+  const ts = ensuredIndexCache.get(indexName);
+  if (typeof ts === 'number' && (Date.now() - ts) < OPENSEARCH_MAPPING_TTL_MS) return false;
+  return true;
 };
 
 // Проверка, является ли ошибка retryable (временной)
@@ -159,11 +184,13 @@ const getIndexName = (date) => {
 // Создание маппинга индекса (если не существует)
 const ensureIndexMapping = async (indexName) => {
   if (!OPENSEARCH_ENABLED || !OPENSEARCH_URL) return;
+  // Зачем: для существующего индекса mapping уже создан; повторять слишком часто — дорого и может вызвать “premature close” из-за нагрузки
+  if (!shouldEnsureIndex(indexName)) return;
   
   try {
     // Проверяем существование индекса
     const checkUrl = `${OPENSEARCH_URL}/${indexName}`;
-    const checkResponse = await fetch(checkUrl, {
+    const checkResponse = await fetchWithTimeout(checkUrl, {
       method: 'HEAD',
       headers: {
         'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
@@ -311,7 +338,7 @@ const ensureIndexMapping = async (indexName) => {
     if (checkResponse.status === 404) {
       // Создаём индекс с правильным маппингом
       const createUrl = `${OPENSEARCH_URL}/${indexName}`;
-      const createResponse = await fetch(createUrl, {
+      const createResponse = await fetchWithTimeout(createUrl, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -337,7 +364,7 @@ const ensureIndexMapping = async (indexName) => {
       try {
         const traceIdField = { properties: { trace_id: { type: 'keyword' } } };
         const traceIdUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
-        const traceIdResponse = await fetch(traceIdUrl, {
+        const traceIdResponse = await fetchWithTimeout(traceIdUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -355,7 +382,7 @@ const ensureIndexMapping = async (indexName) => {
       try {
         const loggerPidField = { properties: { logger_pid: { type: 'long' } } };
         const loggerPidUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
-        const loggerPidResponse = await fetch(loggerPidUrl, {
+        const loggerPidResponse = await fetchWithTimeout(loggerPidUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -387,7 +414,7 @@ const ensureIndexMapping = async (indexName) => {
           }
         };
         const parentDeviceUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
-        const parentDeviceResponse = await fetch(parentDeviceUrl, {
+        const parentDeviceResponse = await fetchWithTimeout(parentDeviceUrl, {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
@@ -405,6 +432,9 @@ const ensureIndexMapping = async (indexName) => {
       // Для исправления нужно пересоздать индекс или использовать reindex API
       // Новые индексы будут создаваться с правильным маппингом extra автоматически
     }
+
+    // Зачем: кешируем только успешную ensureIndexMapping, чтобы не “залипать” на ошибках сети/балансировщика
+    ensuredIndexCache.set(indexName, Date.now());
   } catch (err) {
     console.error(`[opensearch] Ошибка проверки/создания индекса ${indexName}:`, err.message);
   }
@@ -414,6 +444,17 @@ const ensureIndexMapping = async (indexName) => {
 const sendBatch = async (events, retryAttempt = 0) => {
   if (!OPENSEARCH_ENABLED || !OPENSEARCH_URL || events.length === 0) return;
   
+  // Зачем: предотвращаем параллельные отправки (они провоцируют premature close и раздувают задержку)
+  if (isSending && retryAttempt === 0) {
+    opensearchFailedBatch.push(...events);
+    if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
+      const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
+      opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
+      console.error(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
+    }
+    return;
+  }
+
   // Если превышено максимальное количество попыток
   if (retryAttempt >= BACKOFF_MAX_ATTEMPTS) {
     const droppedCount = events.length;
@@ -428,154 +469,166 @@ const sendBatch = async (events, retryAttempt = 0) => {
         retryState.attemptNumber = 0;
         retryState.isRetrying = false;
         retryState.recoveryScheduled = false;
-        console.log(`[opensearch] ð Сброс флага доступности после таймаута, новые события будут отправляться`);
+        console.log(`[opensearch] 🔄 Сброс флага доступности после таймаута, новые события будут отправляться`);
       }, 5 * 60 * 1000); // 5 минут
     }
     return;
   }
   
-  // УБРАНА БЛОКИРОВКА: Всегда пытаемся отправить новые события, даже если предыдущие не удались
-  // Это позволяет отправлять события после восстановления доступности OpenSearch
-  // if (!isOpensearchAvailable && opensearchFailedBatch.length === 0 && retryAttempt === 0) {
-  //   return;
-  // }
-  
-  // Группируем события по дате для создания правильных индексов
-  const eventsByDate = {};
-  for (const event of events) {
-    const date = new Date(event.timestamp);
-    const dateStr = date.toISOString().split('T')[0];
-    if (!eventsByDate[dateStr]) {
-      eventsByDate[dateStr] = [];
+  // Зачем: если уже идёт ретрай, новые события не штурмуют OpenSearch — складируем и ждём восстановления
+  if (retryState.isRetrying && retryAttempt === 0) {
+    opensearchFailedBatch.push(...events);
+    if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
+      const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
+      opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
+      console.error(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
     }
-    eventsByDate[dateStr].push(event);
+    return;
   }
+
+  isSending = true;
   
-  // Отправляем события по датам
-  for (const [dateStr, dateEvents] of Object.entries(eventsByDate)) {
-    const indexName = getIndexName(dateStr);
-    
-    // Убеждаемся, что индекс существует
-    await ensureIndexMapping(indexName);
-    
-    // Формируем bulk запрос
-    let bulkBody = '';
-    for (const event of dateEvents) {
-      // Action line
-      bulkBody += JSON.stringify({
-        index: {
-          _index: indexName,
-          _id: `${event.id}_${event.timestamp}_${event.param}` // Уникальный ID для дедупликации
-        }
-      }) + '\n';
-      // Document line
-      bulkBody += JSON.stringify(event) + '\n';
+  try {
+    // Группируем события по дате для создания правильных индексов
+    const eventsByDate = {};
+    for (const event of events) {
+      const date = new Date(event.timestamp);
+      const dateStr = date.toISOString().split('T')[0];
+      if (!eventsByDate[dateStr]) {
+        eventsByDate[dateStr] = [];
+      }
+      eventsByDate[dateStr].push(event);
     }
     
-    try {
-      const bulkUrl = `${OPENSEARCH_URL}/_bulk`;
-      const response = await fetch(bulkUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-ndjson',
-          'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
-        },
-        body: bulkBody,
-        agent: getHttpsAgent()
-      });
+    // Отправляем события по датам
+    for (const [dateStr, dateEvents] of Object.entries(eventsByDate)) {
+      const indexName = getIndexName(dateStr);
       
-      if (!response.ok) {
-        const errorText = await response.text();
-        const error = new Error(`HTTP ${response.status}: ${errorText}`);
-        error.status = response.status; // Добавляем статус для классификации ошибок
-        throw error;
+      // Убеждаемся, что индекс существует
+      await ensureIndexMapping(indexName);
+      
+      // Формируем bulk запрос
+      let bulkBody = '';
+      for (const event of dateEvents) {
+        // Action line
+        bulkBody += JSON.stringify({
+          index: {
+            _index: indexName,
+            _id: `${event.id}_${event.timestamp}_${event.param}` // Уникальный ID для дедупликации
+          }
+        }) + '\n';
+        // Document line
+        bulkBody += JSON.stringify(event) + '\n';
       }
       
-      const result = await response.json();
-      
-      // Проверяем ошибки в ответе
-      if (result.errors) {
-        const errors = result.items.filter(item => item.index && item.index.error);
-        if (errors.length > 0) {
-          console.error(`[opensearch] Ошибки при индексации ${errors.length} событий:`, 
-            errors.slice(0, 3).map(e => e.index.error.reason));
+      try {
+        const bulkUrl = `${OPENSEARCH_URL}/_bulk`;
+        const response = await fetchWithTimeout(bulkUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/x-ndjson',
+            'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+          },
+          body: bulkBody,
+          agent: getHttpsAgent()
+        });
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          const error = new Error(`HTTP ${response.status}: ${errorText}`);
+          error.status = response.status; // Добавляем статус для классификации ошибок
+          throw error;
         }
-      }
-      
-      // При успехе - сброс состояния повторных попыток
-      if (retryAttempt > 0) {
-        const recoveryTime = retryState.lastErrorTime ? Date.now() - retryState.lastErrorTime : 0;
-        console.log(`[opensearch] ✅ Успешная отправка после ${retryAttempt} попыток (время восстановления: ${(recoveryTime/1000).toFixed(1)}s)`);
-      }
-      
-      retryState.attemptNumber = 0;
-      retryState.lastError = null;
-      retryState.lastErrorTime = null;
-      retryState.nextRetryTime = null;
-      retryState.isRetrying = false;
-      isOpensearchAvailable = true;
-      
-      // Если были failed события - логировать успешное восстановление
-      if (opensearchFailedBatch.length > 0) {
-        console.log(`[opensearch] Recovered ${opensearchFailedBatch.length} failed events`);
-        opensearchFailedBatch = [];
-      }
-      
-    } catch (err) {
-      // Проверка, является ли ошибка retryable
-      const isRetryable = isRetryableError(err);
-      
-      if (!isRetryable) {
-        console.error(`[opensearch] ❌ Non-retryable ошибка (не будет повторных попыток):`, err.message);
-        if (err.status) {
-          console.error(`[opensearch] HTTP статус: ${err.status}`);
+        
+        const result = await response.json();
+        
+        // Проверяем ошибки в ответе
+        if (result.errors) {
+          const errors = result.items.filter(item => item.index && item.index.error);
+          if (errors.length > 0) {
+            console.error(`[opensearch] Ошибки при индексации ${errors.length} событий:`, 
+              errors.slice(0, 3).map(e => e.index.error.reason));
+          }
         }
-        if (err.code) {
-          console.error(`[opensearch] Код ошибки: ${err.code}`);
+        
+        // При успехе - сброс состояния повторных попыток
+        if (retryAttempt > 0) {
+          const recoveryTime = retryState.lastErrorTime ? Date.now() - retryState.lastErrorTime : 0;
+          console.log(`[opensearch] ✅ Успешная отправка после ${retryAttempt} попыток (время восстановления: ${(recoveryTime/1000).toFixed(1)}s)`);
         }
-        // Не повторяем для non-retryable ошибок
-        return;
-      }
-      
-      // Обновление состояния
-      retryState.attemptNumber = retryAttempt + 1;
-      retryState.lastError = err;
-      retryState.lastErrorTime = retryState.lastErrorTime || Date.now();
-      retryState.isRetrying = true;
-      isOpensearchAvailable = false;
-      
-      // Вычисление задержки с экспоненциальным backoff
-      const delay = calculateBackoffDelay(retryAttempt);
-      retryState.nextRetryTime = Date.now() + delay;
-      
-      console.warn(`[opensearch] ⚠️ Ошибка отправки (попытка ${retryState.attemptNumber}/${BACKOFF_MAX_ATTEMPTS}):`, err.message);
-      if (err.code) {
-        console.warn(`[opensearch] Код ошибки: ${err.code}`);
-      }
-      if (err.status) {
-        console.warn(`[opensearch] HTTP статус: ${err.status}`);
-      }
-      console.warn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
-      
-      // Добавить события в резервное хранилище
-      opensearchFailedBatch.push(...dateEvents);
-      
-      // Ограничить размер резервного хранилища
-      if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
-        const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
-        opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
-        console.error(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
-      }
-      
-      // Планирование повторной попытки с экспоненциальным backoff
-      setTimeout(() => {
+        
+        retryState.attemptNumber = 0;
+        retryState.lastError = null;
+        retryState.lastErrorTime = null;
+        retryState.nextRetryTime = null;
+        retryState.isRetrying = false;
+        isOpensearchAvailable = true;
+        
+        // Если были failed события - логировать успешное восстановление
         if (opensearchFailedBatch.length > 0) {
-          const eventsToRetry = [...opensearchFailedBatch];
+          console.log(`[opensearch] Recovered ${opensearchFailedBatch.length} failed events`);
           opensearchFailedBatch = [];
-          sendBatch(eventsToRetry, retryState.attemptNumber);
         }
-      }, delay);
+        
+      } catch (err) {
+        // Проверка, является ли ошибка retryable
+        const isRetryable = isRetryableError(err);
+        
+        if (!isRetryable) {
+          console.error(`[opensearch] ❌ Non-retryable ошибка (не будет повторных попыток):`, err.message);
+          if (err.status) {
+            console.error(`[opensearch] HTTP статус: ${err.status}`);
+          }
+          if (err.code) {
+            console.error(`[opensearch] Код ошибки: ${err.code}`);
+          }
+          // Не повторяем для non-retryable ошибок
+          return;
+        }
+        
+        // Обновление состояния
+        const nextAttempt = retryAttempt + 1;
+        retryState.attemptNumber = nextAttempt;
+        retryState.lastError = err;
+        retryState.lastErrorTime = retryState.lastErrorTime || Date.now();
+        retryState.isRetrying = true;
+        isOpensearchAvailable = false;
+        
+        // Вычисление задержки с экспоненциальным backoff
+        const delay = calculateBackoffDelay(retryAttempt);
+        retryState.nextRetryTime = Date.now() + delay;
+        
+        console.warn(`[opensearch] ⚠️ Ошибка отправки (попытка ${retryState.attemptNumber}/${BACKOFF_MAX_ATTEMPTS}):`, err.message);
+        if (err.code) {
+          console.warn(`[opensearch] Код ошибки: ${err.code}`);
+        }
+        if (err.status) {
+          console.warn(`[opensearch] HTTP статус: ${err.status}`);
+        }
+        console.warn(`[opensearch] Повторная попытка через ${delay}ms (${(delay/1000).toFixed(1)}s)`);
+        
+        // Добавить события в резервное хранилище
+        opensearchFailedBatch.push(...dateEvents);
+        
+        // Ограничить размер резервного хранилища
+        if (opensearchFailedBatch.length > OPENSEARCH_FAILED_BATCH_SIZE) {
+          const dropped = opensearchFailedBatch.length - OPENSEARCH_FAILED_BATCH_SIZE;
+          opensearchFailedBatch = opensearchFailedBatch.slice(-OPENSEARCH_FAILED_BATCH_SIZE);
+          console.error(`[opensearch] Dropped ${dropped} events due to failed batch overflow`);
+        }
+        
+        // Планирование повторной попытки с экспоненциальным backoff
+        setTimeout(() => {
+          if (opensearchFailedBatch.length > 0) {
+            const eventsToRetry = [...opensearchFailedBatch];
+            opensearchFailedBatch = [];
+            sendBatch(eventsToRetry, nextAttempt);
+          }
+        }, delay);
+      }
     }
+  } finally {
+    isSending = false;
   }
 };
 
