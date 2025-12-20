@@ -75,8 +75,9 @@ function matchesExpected(event, expectedMsg, exactPaths) {
   return true;
 }
 
-function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
+function matchExpectations(traceEvents, outputSpec, policy, opts = {}) {
   const errors = [];
+  const used = new Set(); // индексы событий, сопоставленных с expect шагами
   const expectList = Array.isArray(outputSpec.expect) ? outputSpec.expect : [];
   const requirePresent = (policy && Array.isArray(policy.require_present)) ? policy.require_present : [];
 
@@ -98,6 +99,7 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
         errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
         continue;
       }
+      used.add(found.i);
       idx = found.i + 1;
       for (const fieldPath of requirePresent) {
         if (deepGet(found.e, fieldPath) == null) {
@@ -108,7 +110,6 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
   } else {
     // Зачем: если checks.full_chain.order=false, то важен набор событий в trace_id,
     // а порядок в e2e может меняться из-за синтетики и порядка сообщений WS.
-    const used = new Set();
     for (const step of expectList) {
       const expectedMsg = step.msg || {};
       const exact = Array.isArray(step.exact) ? step.exact : [];
@@ -134,7 +135,30 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
     }
   }
 
-  return errors;
+  if (opts.no_extra_events) {
+    // Зачем: хотим гарантировать, что trace_id содержит ровно “набор теста” (кроме допустимого шума).
+    const ignoreRoles = Array.isArray(opts.ignore_extra_roles) ? opts.ignore_extra_roles : ['OTHER'];
+    const ignore = new Set(ignoreRoles);
+    const extras = [];
+    for (let i = 0; i < traceEvents.length; i++) {
+      if (used.has(i)) continue;
+      const role = getEventRole(traceEvents[i]);
+      if (ignore.has(role)) continue;
+      const e = traceEvents[i];
+      const devType = e.device?.type ?? 'N/A';
+      const devHuman = e.device?.human ?? 'N/A';
+      const at = e.extra?.action_type ?? 'N/A';
+      extras.push(`[${role}] id=${e.id} param=${e.param} device.type=${devType} device.human="${devHuman}" new=${String(e.new)} action_type=${at} ts=${e.timestamp}`);
+    }
+    if (extras.length) {
+      const max = Number.isFinite(opts.max_extra_lines) ? opts.max_extra_lines : 12;
+      errors.push(`no_extra_events: найдено лишних событий в trace_id: ${extras.length}`);
+      for (const l of extras.slice(0, max)) errors.push(`no_extra_events: лишнее: ${l}`);
+      if (extras.length > max) errors.push(`no_extra_events: ... truncated: показано ${max} из ${extras.length}`);
+    }
+  }
+
+  return { errors, used };
 }
 
 function runChecks(traceEvents, traceSpec) {
@@ -170,6 +194,11 @@ function runChecks(traceEvents, traceSpec) {
           if (!ok('SCRIPT', 'ACTUATOR')) errors.push('full_chain order: SCRIPT должен быть раньше ACTUATOR');
           if (!ok('ACTUATOR', 'CONSUMER')) errors.push('full_chain order: ACTUATOR должен быть раньше CONSUMER');
         }
+        break;
+      }
+      case 'no_extra_events': {
+        // Зачем: сам контроль “нет лишних событий” делаем в matchExpectations(),
+        // чтобы можно было вывести список лишних событий в отчёт/ошибку.
         break;
       }
       case 'sequence': {
@@ -327,7 +356,17 @@ test('trace-chain: YAML сеты (Увлажнение)', { timeout: 30000 }, as
           ? setSpec.output.checks.find((c) => c && c.type === 'full_chain')
           : null;
         const ordered = !(fullChain && fullChain.order === false);
-        errors.push(...validateExpectations(traceEvents, setSpec.output, scenario.policy, { ordered }));
+        const noExtra = Array.isArray(setSpec.output?.checks)
+          ? setSpec.output.checks.find((c) => c && c.type === 'no_extra_events')
+          : null;
+        const ignoreExtraRoles = Array.isArray(noExtra?.ignore_roles) ? noExtra.ignore_roles : ['OTHER'];
+        const { errors: expErrors } = matchExpectations(traceEvents, setSpec.output, scenario.policy, {
+          ordered,
+          no_extra_events: Boolean(noExtra),
+          ignore_extra_roles: ignoreExtraRoles,
+          max_extra_lines: process.env.TRACE_REPORT_MAX_EXTRA ? Number(process.env.TRACE_REPORT_MAX_EXTRA) : 12,
+        });
+        errors.push(...expErrors);
         errors.push(...runChecks(traceEvents, { checks: setSpec.output?.checks || [] }));
         const score = errors.length;
         if (!best || score < best.score || (score === best.score && traceEvents.length > best.traceEvents.length)) {

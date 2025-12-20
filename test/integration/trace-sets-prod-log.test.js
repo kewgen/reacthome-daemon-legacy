@@ -69,8 +69,9 @@ function matchesExpected(event, expectedMsg, exactPaths) {
   return true;
 }
 
-function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
+function matchExpectations(traceEvents, outputSpec, policy, opts = {}) {
   const errors = [];
+  const used = new Set(); // индексы событий, сопоставленных с expect шагами
   const expectList = Array.isArray(outputSpec.expect) ? outputSpec.expect : [];
   const requirePresent = (policy && Array.isArray(policy.require_present)) ? policy.require_present : [];
 
@@ -92,6 +93,7 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
         errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
         continue;
       }
+      used.add(found.i);
       idx = found.i + 1;
       for (const fieldPath of requirePresent) {
         if (deepGet(found.e, fieldPath) == null) {
@@ -102,7 +104,6 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
   } else {
     // Зачем: в боевых логах порядок сообщений от демона и “синтетических” SCRIPT может отличаться,
     // но нам важно наличие полного набора событий в одном trace_id.
-    const used = new Set(); // индексы уже сопоставленных событий
     for (const step of expectList) {
       const expectedMsg = step.msg || {};
       const exact = Array.isArray(step.exact) ? step.exact : [];
@@ -128,7 +129,31 @@ function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
     }
   }
 
-  return errors;
+  if (opts.no_extra_events) {
+    // Зачем: по требованию — набор событий в trace_id должен соответствовать тестовому набору.
+    // Любые “лишние” события (кроме разрешённых ролей) требуют расследования.
+    const ignoreRoles = Array.isArray(opts.ignore_extra_roles) ? opts.ignore_extra_roles : ['OTHER'];
+    const ignore = new Set(ignoreRoles);
+    const extras = [];
+    for (let i = 0; i < traceEvents.length; i++) {
+      if (used.has(i)) continue;
+      const role = getEventRole(traceEvents[i]);
+      if (ignore.has(role)) continue;
+      extras.push({ i, role, e: traceEvents[i] });
+    }
+    if (extras.length) {
+      const max = Number.isFinite(opts.max_extra_lines) ? opts.max_extra_lines : 12;
+      errors.push(`no_extra_events: найдено лишних событий в trace_id: ${extras.length}`);
+      for (const x of extras.slice(0, max)) {
+        errors.push(`no_extra_events: лишнее: ${formatTraceLine(x.e)}`);
+      }
+      if (extras.length > max) {
+        errors.push(`no_extra_events: ... truncated: показано ${max} из ${extras.length}`);
+      }
+    }
+  }
+
+  return { errors, used };
 }
 
 function runChecks(traceEvents, traceSpec) {
@@ -165,6 +190,11 @@ function runChecks(traceEvents, traceSpec) {
           if (!ok('SCRIPT', 'ACTUATOR')) errors.push('full_chain order: SCRIPT должен быть раньше ACTUATOR');
           if (!ok('ACTUATOR', 'CONSUMER')) errors.push('full_chain order: ACTUATOR должен быть раньше CONSUMER');
         }
+        break;
+      }
+      case 'no_extra_events': {
+        // Зачем: контроль “нет лишних событий” делаем в matchExpectations(),
+        // чтобы вывести список лишних событий в отчёт.
         break;
       }
       case 'sequence': {
@@ -434,7 +464,17 @@ test('prod-log: валидация боевых логов по YAML сетам'
       for (const tid of ids) {
         const events = (eventsByTraceId.get(tid) || []).slice().sort((x, y) => x.timestamp - y.timestamp);
         const errors = [];
-        errors.push(...validateExpectations(events, a.setSpec.output, scenario.policy, { ordered: false }));
+        const noExtra = Array.isArray(a.setSpec.output?.checks)
+          ? a.setSpec.output.checks.find((c) => c && c.type === 'no_extra_events')
+          : null;
+        const ignoreExtraRoles = Array.isArray(noExtra?.ignore_roles) ? noExtra.ignore_roles : ['OTHER'];
+        const { errors: expErrors } = matchExpectations(events, a.setSpec.output, scenario.policy, {
+          ordered: false,
+          no_extra_events: Boolean(noExtra),
+          ignore_extra_roles: ignoreExtraRoles,
+          max_extra_lines: process.env.TRACE_REPORT_MAX_EXTRA ? Number(process.env.TRACE_REPORT_MAX_EXTRA) : 12,
+        });
+        errors.push(...expErrors);
         errors.push(...runChecksProd(events, { checks: a.setSpec.output?.checks || [] }));
         const score = errors.length;
         if (!best || score < best.score || (score === best.score && events.length > best.events.length)) {
