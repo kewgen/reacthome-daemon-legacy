@@ -305,6 +305,8 @@ test('trace-chain: YAML сеты (Увлажнение)', { timeout: 30000 }, as
         ...process.env,
         DAEMON_WS_URL: `ws://127.0.0.1:${daemon.port}`,
         OPENSEARCH_ENABLED: 'false',
+        // Зачем: YAML trace-сеты содержат реальные WS сообщения (включая executed), поэтому синтетика здесь даёт дубли
+        // и ломает no_extra_events. Для проверки “1:1 как в бою” держим синтетику выключенной.
         SYNTHETIC_SCRIPT_EVENTS: 'false'
       },
       stdio: ['ignore', 'pipe', 'pipe']

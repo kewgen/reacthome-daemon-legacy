@@ -1101,6 +1101,20 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
       recent &&
       (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer' || recent.type === 'consumer')
     ) {
+        // Зачем: если текущий event — это SCRIPT executed/last_execution и trace_id берём из кэша,
+        // то мы всё равно обязаны прокинуть trace_id на targets этого скрипта (включая ветки on/off),
+        // иначе дочерний скрипт/consumer может уйти в новый trace_id.
+        // Это критично для цепочки SOURCE → SCRIPT(toggle) → SCRIPT(branch) → ACTUATOR → CONSUMER.
+        if ((param === 'executed' || param === 'last_execution') && role === 'script') {
+          const targets = getScriptTargetDevices(id);
+          for (const tid of targets) {
+            traceIdCache.set(tid, cachedTraceId);
+            const prev = recentEventsCache.get(tid);
+            if (!prev || (typeof prev.timestamp === 'number' && prev.timestamp <= now)) {
+              recentEventsCache.set(tid, { timestamp: now, trace_id: cachedTraceId, type: 'script' });
+            }
+          }
+        }
       recentEventsCache.set(id, { timestamp: now, trace_id: cachedTraceId, type: context?.type || 'unknown' });
       return cachedTraceId;
     }
