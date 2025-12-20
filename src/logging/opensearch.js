@@ -25,9 +25,18 @@ let httpsAgent = null;
 const getHttpsAgent = () => {
   if (httpsAgent) return httpsAgent;
   
+  // Зачем: keepAlive снижает число новых TCP/TLS соединений и уменьшает вероятность ETIMEDOUT при частых bulk-запросах
+  const agentDefaults = {
+    keepAlive: true,
+    keepAliveMsecs: 10_000,
+    maxSockets: 8,
+    maxFreeSockets: 2
+  };
+
   if (fs.existsSync(OPENSEARCH_CA_CERT)) {
     const ca = fs.readFileSync(OPENSEARCH_CA_CERT);
     httpsAgent = new https.Agent({
+      ...agentDefaults,
       ca: ca,
       rejectUnauthorized: true
     });
@@ -36,6 +45,7 @@ const getHttpsAgent = () => {
     // Если сертификат не найден, используем стандартный agent (для тестирования)
     // ⚠️ ВНИМАНИЕ: В продакшене должен быть установлен сертификат!
     httpsAgent = new https.Agent({
+      ...agentDefaults,
       rejectUnauthorized: false // ⚠️ Только для разработки, в продакшене должен быть true
     });
     console.warn(`[opensearch] ⚠️ CA сертификат не найден: ${OPENSEARCH_CA_CERT}`);
