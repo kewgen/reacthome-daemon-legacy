@@ -28,6 +28,7 @@ const {
 } = require('./event-log');
 const filters = require('./filters');
 const opensearch = require('./opensearch');
+const { ensureLoggerPid } = require('./event-meta'); // Зачем: единая точка заполнения logger_pid + юнит‑тесты
 
 // Зачем: определение типов устройств-потребителей для добавления признака consumer в события
 // Алгоритм взят из src/monitor.js
@@ -1498,20 +1499,22 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
 
 // Отправка события в OpenSearch или буфер
 const sendEvent = (event) => {
+  const eventWithMeta = ensureLoggerPid(event, process.pid); // Зачем: гарантируем logger_pid на каждом событии
+
   // Зачем: записываем событие в локальный файл для резервного хранения
-  writeEventToFile(event);
+  writeEventToFile(eventWithMeta);
   
   // Проверяем доступность OpenSearch
   if (opensearch.isEnabled && opensearch.isEnabled()) {
     // Отправляем напрямую
-    opensearch.sendBatch([event]).catch(err => {
+    opensearch.sendBatch([eventWithMeta]).catch(err => {
       logError('Ошибка отправки события в OpenSearch:', err.message);
       // При ошибке добавляем в буфер
-      addToBuffer(event);
+      addToBuffer(eventWithMeta);
     });
   } else {
     // Добавляем в буфер
-    addToBuffer(event);
+    addToBuffer(eventWithMeta);
   }
 };
 

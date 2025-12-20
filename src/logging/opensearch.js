@@ -209,6 +209,8 @@ const ensureIndexMapping = async (indexName) => {
             site: { type: 'keyword' },
             project: { type: 'keyword' },
             trace_id: { type: 'keyword' },
+            // Зачем: фиксируем PID логгера для диагностики дублей/мультизапусков
+            logger_pid: { type: 'long' },
             channel: {
               properties: {
                 id: { type: 'keyword' },
@@ -317,7 +319,7 @@ const ensureIndexMapping = async (indexName) => {
       }
     } else {
       // Индекс существует - добавляем только недостающие поля по одному
-      // Зачем: добавляем trace_id и parentDevice (channel и endDevice уже могут существовать с другими типами)
+      // Зачем: добавляем trace_id/logger_pid и parentDevice (channel и endDevice уже могут существовать с другими типами)
       // В OpenSearch можно добавлять только новые поля, нельзя изменять существующие
       // Добавляем поля по одному, чтобы не конфликтовать с существующими
       
@@ -332,6 +334,24 @@ const ensureIndexMapping = async (indexName) => {
             'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
           },
           body: JSON.stringify(traceIdField),
+          agent: getHttpsAgent()
+        });
+        // Зачем: не логируем - слишком частое событие, засоряет логи
+      } catch (err) {
+        // Игнорируем ошибки - поле может уже существовать
+      }
+
+      // Пробуем добавить logger_pid
+      try {
+        const loggerPidField = { properties: { logger_pid: { type: 'long' } } };
+        const loggerPidUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
+        const loggerPidResponse = await fetch(loggerPidUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+          },
+          body: JSON.stringify(loggerPidField),
           agent: getHttpsAgent()
         });
         // Зачем: не логируем - слишком частое событие, засоряет логи

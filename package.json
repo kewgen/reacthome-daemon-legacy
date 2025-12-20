@@ -30,6 +30,8 @@
   "scripts": {
     "lint": "npx eslint@8 src/monitor.js --ext .js",
     "install-hooks": "git config core.hooksPath .githooks",
-    "prepare": "npm run install-hooks"
+    "prepare": "npm run install-hooks",
+    "test": "node --test",
+    "test:unit": "node --test test/unit"
   }
 }
