@@ -1,0 +1,4 @@
+#!/bin/sh
+
+echo "Running lint (npm run lint)..."
+npm run lint
