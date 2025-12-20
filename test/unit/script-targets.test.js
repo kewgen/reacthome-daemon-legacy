@@ -54,7 +54,7 @@ test('getScriptTargetDeviceIds: резолвит onTrue → вложенный �
 
   const out = getScriptTargetDeviceIds(state, 'ez');
   assert.equal(out.has(consumer), true);
-  assert.equal(out.has('toggle'), false); // Зачем: скрипты не должны попадать как "устройства"
+  assert.equal(out.has('toggle'), true); // Зачем: вложенный скрипт — явная цель для прокидывания trace_id (script→script без временных эвристик)
 });
 
 test('getScriptTargetDeviceIds: поддерживает site[] → устройства локации', () => {

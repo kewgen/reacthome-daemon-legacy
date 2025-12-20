@@ -36,6 +36,9 @@ function getScriptTargetDeviceIds(stateLike, scriptId, opts = {}) {
     const obj = stateLike.get(maybeId);
     const isNestedScript = !!(obj && typeof obj === 'object' && Array.isArray(obj.action));
     if (isNestedScript) {
+      // Зачем: вложенный скрипт — это тоже явная цель.
+      // Добавляем ЕГО id в targets, чтобы родитель мог проставить trace_id дочернему скрипту без временных эвристик.
+      targets.add(maybeId);
       const nestedTargets = getScriptTargetDeviceIds(stateLike, maybeId, { visitedScripts });
       for (const t of nestedTargets) targets.add(t);
       return;

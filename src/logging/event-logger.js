@@ -90,6 +90,9 @@ const traceIdCache = new Map(); // id -> trace_id
 // Зачем: связывание событий по времени для построения трассировки без _context
 const recentEventsCache = new Map(); // id -> { timestamp, trace_id, type }
 const RECENT_EVENT_WINDOW_MS = 2000; // Окно 2 секунды для связывания событий
+// Зачем: защита от “залипания” trace_id на одном id (особенно на CONSUMER) после широких сценариев (site-light-off и т.п.).
+// Это не “склейка по времени” разных сущностей, а TTL переиспользования trace_id для ТОГО ЖЕ id.
+const TRACE_ID_REUSE_WINDOW_MS = Number(process.env.TRACE_ID_REUSE_WINDOW_MS || RECENT_EVENT_WINDOW_MS);
 
 // 4. Кэш активных скриптов для связывания событий устройств
 // Зачем: отслеживание запущенных скриптов и связывание их событий с событиями устройств
@@ -108,6 +111,12 @@ const scriptExecutionCache = new Map(); // scriptId -> {
 const SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC = 10000; // 10 секунд (учитывая delay в скриптах)
 const SCRIPT_CACHE_CLEANUP_THRESHOLD_MS = 20000; // 20 секунд для очистки
 
+// 5.1. Кэш “tick” планировщика (timestamp демона -> trace_id)
+// Зачем: у планировщика (clock/schedule) и дочерних скриптов executed часто один и тот же payload.timestamp (один tick демона),
+// но выводятся они из разных device-change (разные вызовы checkAndGenerateScriptEvent), поэтому без временной эвристики цепь распадается.
+// Мы не используем “окно 2 секунды”, а связываем только по ТОЧНОМУ timestamp демона и только для SCRIPT executed.
+const schedulerTickTraceCache = new Map(); // timestamp:number -> { timestamp, trace_id }
+
 // 6. Обратный индекс deviceId -> Set<scriptId> для быстрого поиска скриптов
 // Зачем: оптимизация поиска скриптов содержащих устройство
 const deviceToScriptsIndex = new Map(); // deviceId -> Set<scriptId>
@@ -124,6 +133,11 @@ const DEBUG_MODE = process.env.DEBUG === 'true';
 // Зачем: в некоторых тестовых сценариях SCRIPT executed события приходят явно (из YAML),
 // и синтетическая генерация “executed” по изменениям устройств мешает детерминизму.
 const SYNTHETIC_SCRIPT_EVENTS_ENABLED = process.env.SYNTHETIC_SCRIPT_EVENTS !== 'false';
+
+// Зачем: временная (эвристическая) корреляция по окну времени часто даёт “шум” и ложные склейки trace_id.
+// Оставляем возможность включить её для диагностики, но по умолчанию выключаем.
+// Включение: TRACE_TEMPORAL_CORRELATION_ENABLED=1
+const TEMPORAL_TRACE_CORRELATION_ENABLED = process.env.TRACE_TEMPORAL_CORRELATION_ENABLED === '1';
 
 // Логирование
 const log = (message, ...args) => {
@@ -607,22 +621,88 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
   // то скрипт должен попасть в тот же trace_id, иначе канал/потребитель разъедутся по разным trace.
   const now = (typeof timestamp === 'number' ? timestamp : Date.now());
   let trace_id = null;
-  const recent = deviceId ? recentEventsCache.get(deviceId) : null;
-  if (recent && typeof recent.timestamp === 'number') {
-    const age = now - recent.timestamp;
-    if (age >= 0 && age <= RECENT_EVENT_WINDOW_MS && recent.trace_id) {
-      // Разрешаем наследование от consumer/script/schedule/timer (но не от "unknown" init-state).
-      if (recent.type === 'consumer' || recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') {
-        trace_id = recent.trace_id;
+
+  // Зачем: убираем “поиск по временному окну” (скан recentEventsCache),
+  // но сохраняем ЯВНУЮ связку: если текущий запуск скрипта выведен из изменения конкретного deviceId,
+  // и этот deviceId уже помечен trace_id как цель скрипта/цепочки (traceIdCache+recentEventsCache),
+  // то скрипт обязан унаследовать этот trace_id (пример: SOURCE → CONSUMER → synthetic SCRIPT executed).
+  if (!TEMPORAL_TRACE_CORRELATION_ENABLED && deviceId) {
+    const directTrace = traceIdCache.get(deviceId);
+    const direct = recentEventsCache.get(deviceId);
+    if (directTrace && direct && typeof direct.timestamp === 'number') {
+      const age = now - direct.timestamp;
+      if (
+        age >= 0 &&
+        age <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC &&
+        direct.trace_id === directTrace &&
+        (direct.type === 'script' || direct.type === 'consumer' || direct.type === 'schedule' || direct.type === 'timer')
+      ) {
+        trace_id = directTrace;
+      }
+    }
+  }
+
+  // Зачем: “tick” демона применяем ТОЛЬКО для scheduler-like скриптов (clock/schedule/timer/duration).
+  // Иначе есть риск склеить независимые цепочки, которые просто совпали по payload.timestamp.
+  const scriptStateForTick = state.get(scriptId);
+  const isSchedulerLikeForTick = !!(
+    scriptStateForTick &&
+    typeof scriptStateForTick === 'object' &&
+    (scriptStateForTick.clock || scriptStateForTick.schedule || scriptStateForTick.timer || scriptStateForTick.duration)
+  );
+  if (isSchedulerLikeForTick && typeof timestamp === 'number') {
+    const tick = schedulerTickTraceCache.get(timestamp);
+    if (tick && tick.trace_id) {
+      trace_id = tick.trace_id;
+    }
+  }
+
+  if (TEMPORAL_TRACE_CORRELATION_ENABLED) {
+    const recent = deviceId ? recentEventsCache.get(deviceId) : null;
+    if (recent && typeof recent.timestamp === 'number') {
+      const age = now - recent.timestamp;
+      if (age >= 0 && age <= RECENT_EVENT_WINDOW_MS && recent.trace_id) {
+        // Разрешаем наследование от consumer/script/schedule/timer (но не от "unknown" init-state).
+        if (recent.type === 'consumer' || recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') {
+          trace_id = recent.trace_id;
+        }
       }
     }
   }
   if (!trace_id) {
-    trace_id = uuidv4();
+    // Зачем: без временных эвристик склеиваем синтетические script→script цепочки по ЯВНОЙ связи (граф скриптов).
+    // Если родительский скрипт уже пометил этот scriptId как цель (targets включают вложенные скрипты),
+    // то trace_id уже будет в traceIdCache + recentEventsCache с тем же timestamp — переиспользуем.
+    const cachedTraceId = traceIdCache.get(scriptId);
+    const recent = recentEventsCache.get(scriptId);
+    if (
+      cachedTraceId &&
+      recent &&
+      typeof recent.timestamp === 'number' &&
+      typeof timestamp === 'number' &&
+      recent.timestamp === timestamp &&
+      recent.type === 'script'
+    ) {
+      trace_id = cachedTraceId;
+    } else {
+      trace_id = uuidv4();
+    }
+  }
+
+  // Зачем: запоминаем trace_id для данного tick timestamp только для scheduler-like скриптов.
+  if (isSchedulerLikeForTick && typeof timestamp === 'number' && trace_id && !schedulerTickTraceCache.has(timestamp)) {
+    schedulerTickTraceCache.set(timestamp, { timestamp, trace_id });
   }
   
   // 2. Получаем целевые устройства скрипта
-  const targetDevices = getScriptTargetDevices(scriptId);
+  const targetDevicesForTrace = getScriptTargetDevices(scriptId);
+  // Зачем: `getScriptTargetDevices` включает вложенные скрипты как “цели” для прокидывания trace_id,
+  // но скрипты как сущности не генерируют device-change события, поэтому по ним нельзя определять “завершение”
+  // синтетического выполнения. Если оставить их в targetDevices, то кэш будет “вечно” висеть и склеивать
+  // поздние события (например, авто-выключение) в тот же trace_id.
+  const targetDevicesForCompletion = new Set(
+    Array.from(targetDevicesForTrace).filter((tid) => getDeviceRole(tid) !== 'script')
+  );
   
   // 3. Сохраняем в кэш
   scriptExecutionCache.set(scriptId, {
@@ -630,11 +710,11 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
     trace_id: trace_id,
     devicesChanged: new Set([deviceId]),
     syntheticEventSent: false,
-    targetDevices: targetDevices
+    targetDevices: targetDevicesForCompletion
   });
   
-  // 4. Сохраняем trace_id для всех целевых устройств
-  for (const devId of targetDevices) {
+  // 4. Сохраняем trace_id для всех целей (включая вложенные скрипты — для связности script→script)
+  for (const devId of targetDevicesForTrace) {
     traceIdCache.set(devId, trace_id);
     // Зачем: целевое устройство/скрипт может прийти следующим событием и должен сразу подхватить trace_id,
     // даже если у него ещё нет собственной записи в recentEventsCache.
@@ -653,7 +733,16 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
     cached.syntheticEventSent = true;
   }
   
-  log(`📋 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} запущен (выведено), trace_id=${trace_id.slice(0,8)}, целевых устройств: ${targetDevices.size}`);
+  log(`📋 [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} запущен (выведено), trace_id=${trace_id.slice(0,8)}, целевых устройств: ${targetDevicesForCompletion.size}`);
+
+  // Зачем: если скрипт уже “закрылся” одним изменением (targetDevices=1 и deviceId совпал),
+  // не держим его в кэше — иначе trace_id будет “липнуть” к устройству слишком долго.
+  {
+    const c = scriptExecutionCache.get(scriptId);
+    if (c && c.targetDevices && c.devicesChanged && c.devicesChanged.size === c.targetDevices.size) {
+      scriptExecutionCache.delete(scriptId);
+    }
+  }
 };
 
 // Обработка продолжения работы скрипта
@@ -668,16 +757,129 @@ const handleContinuingScriptExecution = (scriptId, deviceId, cached) => {
   // Проверяем, все ли целевые устройства изменились
   if (cached.devicesChanged.size === cached.targetDevices.size) {
     log(`✅ [SYNTHETIC] Скрипт ${scriptId.slice(0,8)} завершил работу, все устройства изменены`);
+    // Зачем: выполнение завершено — удаляем из кэша, чтобы следующие события не наследовали старый trace_id.
+    scriptExecutionCache.delete(scriptId);
   }
 };
 
 // Проверка и генерация синтетических событий для скриптов
 // Зачем: определение запущенных скриптов по изменениям устройств и генерация синтетических событий
-const checkAndGenerateScriptEvent = (deviceId, timestamp) => {
+const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
   const scripts = findScriptsContainingDevice(deviceId);
   if (scripts.length === 0) return;
   
+  // Зачем: синтетика должна строиться на ЯВНЫХ связях, а не “по времени”.
+  // Если deviceId уже находится в trace (traceIdCache), то синтетически выводим только те скрипты,
+  // которые уже были “помечены” этим же trace (например, через SOURCE→SCRIPT→targets прокидывание).
+  // Это резко уменьшает шум (случайные скрипты, у которых в action встречается этот consumerId).
+  const getCurrentTrace = () => {
+    const t = traceIdCache.get(deviceId);
+    if (t) return t;
+    const r = recentEventsCache.get(deviceId);
+    return r && r.trace_id ? r.trace_id : null;
+  };
+
+  // Зачем: ветка on/off в toggle должна быть единственной и соответствовать новому значению consumer.value.
+  const consumerValue =
+    newState && typeof newState === 'object' && Object.prototype.hasOwnProperty.call(newState, 'value')
+      ? newState.value
+      : undefined;
+
+  // Зачем: если trace уже установлен, синтетику строим только на “разрешённом” подмножестве:
+  // Toggle-скрипт(ы) в этом trace + одна ветка on/off, выбранная по consumer.value.
+  const currentTrace = getCurrentTrace();
+  const allowedScripts = new Set();
+  if (currentTrace) {
+    // 1) Разрешаем только Toggle-скрипты, которые уже помечены этим trace (явная связь от SOURCE→SCRIPT(onClick)→traceIdCache).
+    // Зачем: иначе через deviceToScriptsIndex к consumerId могут “приклеиться” чужие toggle‑скрипты (пример: "Сон в спальне toggle").
+    for (const sid of scripts) {
+      const st = state.get(sid);
+      const at = determineScriptActionType(sid, st);
+      if (at !== 'ACTION_TOGGLE') continue;
+      const stTrace = traceIdCache.get(sid);
+      if (stTrace && stTrace === currentTrace) {
+        allowedScripts.add(sid);
+      }
+    }
+
+    // 2) Разрешаем ровно одну ветку on/off, если можем определить её по consumer.value.
+    if (allowedScripts.size > 0 && typeof consumerValue === 'boolean') {
+      const wantOn = consumerValue === true;
+      const pickBranch = (toggleScriptId) => {
+        const toggle = state.get(toggleScriptId);
+        if (!toggle || typeof toggle !== 'object' || !Array.isArray(toggle.action) || toggle.action.length === 0) return null;
+
+        // Зачем: формат payload в бою может отличаться (payload.payload vs payload),
+        // а toggle может иметь несколько action[] — пробуем по всем.
+        for (const actionId of toggle.action) {
+          const actionObj = state.get(actionId);
+          if (!actionObj || typeof actionObj !== 'object') continue;
+          const p = actionObj.payload;
+          const pp = p && typeof p === 'object' ? (p.payload && typeof p.payload === 'object' ? p.payload : p) : null;
+          if (!pp || typeof pp !== 'object') continue;
+          const id = wantOn ? pp.onOn : pp.onOff;
+          if (typeof id === 'string' && id) return id;
+        }
+        return null;
+      };
+      for (const tid of allowedScripts) {
+        let bid = pickBranch(tid);
+        // Зачем: фолбэк — если onOn/onOff не нашли, выбираем ветку по префиксу из title toggle ("X Toggle" -> "X on/off").
+        if (!bid) {
+          const toggle = state.get(tid);
+          const title = toggle && typeof toggle === 'object' ? toggle.title : null;
+          if (typeof title === 'string' && title.includes(' ')) {
+            const prefix = title.split(' ')[0]; // "6.D.L.3"
+            for (const sid of scripts) {
+              const st = state.get(sid);
+              const at = determineScriptActionType(sid, st);
+              if (wantOn && at !== 'ACTION_ON') continue;
+              if (!wantOn && at !== 'ACTION_OFF') continue;
+              const stTitle = st && typeof st === 'object' ? st.title : null;
+              if (typeof stTitle === 'string' && stTitle.startsWith(`${prefix} `)) {
+                bid = sid;
+                break;
+              }
+            }
+          }
+        }
+        if (bid) allowedScripts.add(bid);
+      }
+    }
+  }
+
+  // Зачем: если trace уже есть, но мы НЕ смогли однозначно выделить “наши” скрипты (allowedScripts пуст),
+  // то синтетика не должна нацеплять любые случайные скрипты с consumerId в action — это и есть “шум”.
+  if (currentTrace && allowedScripts.size === 0) return;
+
   for (const scriptId of scripts) {
+    const scriptState = state.get(scriptId);
+    const actionType = determineScriptActionType(scriptId, scriptState);
+
+    // Зачем: для branch-скриптов выбираем соответствующую ветку по значению consumer.value
+    // (true -> ACTION_ON / title "* on", false -> ACTION_OFF / title "* off").
+    if (typeof consumerValue === 'boolean') {
+      if (actionType === 'ACTION_ON' && consumerValue !== true) continue;
+      if (actionType === 'ACTION_OFF' && consumerValue !== false) continue;
+      // Дополнительный фолбэк по title, если action_type не определился.
+      if (actionType === 'ACTION_UNKNOWN' && typeof scriptState?.title === 'string') {
+        const t = scriptState.title.trim().toLowerCase();
+        if (t.endsWith(' on') && consumerValue !== true) continue;
+        if (t.endsWith(' off') && consumerValue !== false) continue;
+      }
+    }
+
+    // Зачем: если trace уже есть — берём только разрешённые скрипты (см. allowedScripts),
+    // иначе от consumerId могут “прилипнуть” чужие ACTION_ON/OFF (например, "Свет балкон").
+    if (currentTrace) {
+      if (!allowedScripts.has(scriptId)) continue;
+    } else {
+      // Зачем: если trace ещё не установлен, разрешаем синтетику только для “планировщика” (clock/schedule/timer),
+      // чтобы стартовать цепочку, а дальше уже работать по явному trace.
+      const isSchedulerLike = !!(scriptState && typeof scriptState === 'object' && (scriptState.clock || scriptState.schedule || scriptState.timer || scriptState.duration));
+      if (!isSchedulerLike) continue;
+    }
+
     const cached = scriptExecutionCache.get(scriptId);
     const timeSinceLastChange = cached 
       ? (timestamp - cached.firstChangeTimestamp) 
@@ -786,49 +988,52 @@ const analyzeDeviceContext = (id, timestamp, param) => {
     };
   }
   
-  // Проверяем активные скрипты (события в течение 5 секунд)
-  // Зачем: связываем события устройств с активными скриптами
-  for (const [scriptId, scriptInfo] of activeScriptsCache.entries()) {
-    const timeDiff = now - scriptInfo.timestamp;
-    
-    // Если скрипт активен (в пределах временного окна)
-    if (timeDiff <= SCRIPT_EXECUTION_WINDOW_MS) {
-      // Проверяем, является ли текущее устройство целевым для скрипта
-      if (scriptInfo.actionDevices && scriptInfo.actionDevices.has(id)) {
-        return {
-          type: 'script',
-          ref: scriptId,
-          deviceId: scriptId,
-          inferredFrom: 'active_script_cache' // Маркер: найдено через кэш активных скриптов
-        };
+  // Зачем: временная корреляция может давать “шум” — по умолчанию выключаем.
+  if (TEMPORAL_TRACE_CORRELATION_ENABLED) {
+    // Проверяем активные скрипты (события в течение 5 секунд)
+    // Зачем: связываем события устройств с активными скриптами
+    for (const [scriptId, scriptInfo] of activeScriptsCache.entries()) {
+      const timeDiff = now - scriptInfo.timestamp;
+      
+      // Если скрипт активен (в пределах временного окна)
+      if (timeDiff <= SCRIPT_EXECUTION_WINDOW_MS) {
+        // Проверяем, является ли текущее устройство целевым для скрипта
+        if (scriptInfo.actionDevices && scriptInfo.actionDevices.has(id)) {
+          return {
+            type: 'script',
+            ref: scriptId,
+            deviceId: scriptId,
+            inferredFrom: 'active_script_cache' // Маркер: найдено через кэш активных скриптов
+          };
+        }
       }
     }
-  }
-  
-  // Анализируем недавние события для определения возможного триггера
-  // Зачем: если устройство изменилось в течение 2 секунд после другого события, возможно это цепочка
-  for (const [recentId, recentEvent] of recentEventsCache.entries()) {
-    const timeDiff = now - recentEvent.timestamp;
     
-    // Если событие в пределах временного окна
-    if (timeDiff <= RECENT_EVENT_WINDOW_MS) {
-      const recentRole = getDeviceRole(recentId);
+    // Анализируем недавние события для определения возможного триггера
+    // Зачем: если устройство изменилось в течение 2 секунд после другого события, возможно это цепочка
+    for (const [recentId, recentEvent] of recentEventsCache.entries()) {
+      const timeDiff = now - recentEvent.timestamp;
       
-      // Если недавнее событие было от скрипта
-      if (recentRole === 'script') {
-        // Для получения action нужен полный объект из state
-        const recentDevice = state.get(recentId);
-        // Проверяем, есть ли текущее устройство в списке действий скрипта
-        if (recentDevice && Array.isArray(recentDevice.action)) {
-          const targetDevices = getScriptTargetDevices(recentId);
-          if (targetDevices.has(id)) {
-            // Нашли связь: текущее устройство в целевых устройствах скрипта
-            return {
-              type: 'script',
-              ref: recentId,
-              deviceId: recentId,
-              inferredFrom: 'temporal_analysis' // Маркер, что это выведено из анализа
-            };
+      // Если событие в пределах временного окна
+      if (timeDiff <= RECENT_EVENT_WINDOW_MS) {
+        const recentRole = getDeviceRole(recentId);
+        
+        // Если недавнее событие было от скрипта
+        if (recentRole === 'script') {
+          // Для получения action нужен полный объект из state
+          const recentDevice = state.get(recentId);
+          // Проверяем, есть ли текущее устройство в списке действий скрипта
+          if (recentDevice && Array.isArray(recentDevice.action)) {
+            const targetDevices = getScriptTargetDevices(recentId);
+            if (targetDevices.has(id)) {
+              // Нашли связь: текущее устройство в целевых устройствах скрипта
+              return {
+                type: 'script',
+                ref: recentId,
+                deviceId: recentId,
+                inferredFrom: 'temporal_analysis' // Маркер, что это выведено из анализа
+              };
+            }
           }
         }
       }
@@ -849,6 +1054,19 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
   // Зачем: для корректной связности цепочек используем timestamp события (из payload),
   // а не локальный Date.now() — это важно и для боевых логов, и для e2e сценариев с “пауза 20+ секунд”.
   const now = (typeof eventTimestamp === 'number' ? eventTimestamp : Date.now());
+
+  // Зачем: не у всех сущностей должна быть трассировка. SITE/PROJECT/DAEMON — служебные объекты (локации/проект/демон),
+  // их события не являются частью пользовательских цепочек SOURCE→SCRIPT→ACTUATOR→CONSUMER и дают “шум”
+  // (ложные склейки по parent/временному окну). Поэтому trace_id им НЕ назначаем и в кэши корреляции НЕ кладём.
+  {
+    const obj = state.get(id);
+    const t = obj && typeof obj === 'object' && typeof obj.type === 'string' ? obj.type.toLowerCase() : null;
+    if (t === 'site' || t === 'project' || t === 'daemon') {
+      traceIdCache.delete(id);
+      recentEventsCache.delete(id);
+      return null;
+    }
+  }
   
   // Если в контексте уже есть trace_id - используем его и сохраняем в кэш
   if (context && context.trace_id) {
@@ -863,15 +1081,29 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
     const cachedTraceId = traceIdCache.get(id);
     const recent = recentEventsCache.get(id);
     const age = recent && typeof recent.timestamp === 'number' ? (now - recent.timestamp) : Infinity;
+    const role = getDeviceRole(id);
+    // Зачем: если это CONSUMER, и предыдущий trace_id был поставлен самим consumer-событием,
+    // то при быстрых колебаниях (true→false за сотни миллисекунд) мы получаем “две ветки” в одном trace.
+    // Это ломает правило “одна ветка на trace” и мешает анализу. Поэтому consumer→consumer reuse запрещаем,
+    // но если trace_id пришёл от SCRIPT (recent.type==='script'), то reuse разрешаем (явная связь).
+    if (role === 'consumer' && recent && recent.type === 'consumer') {
+      // Не переиспользуем cachedTraceId; ниже будет создан новый trace_id для этого consumer-события.
+    } else {
+      // Зачем: для CONSUMER `value` считаем “липкость” очень короткой (только RECENT_EVENT_WINDOW_MS),
+      // иначе auto-off/дребезг (через 3-5 секунд) попадает в тот же trace_id и даёт обе ветки on+off в одном trace.
+      // Это не про “склейку разных сущностей”, а про переиспользование кэша на одном id.
+      const effectiveReuseWindowMs =
+        role === 'consumer' && param === 'value' ? RECENT_EVENT_WINDOW_MS : TRACE_ID_REUSE_WINDOW_MS;
     // Зачем: не переносим trace_id “вечно”; если событие оторвалось по времени — это новая цепочка.
     // Также: не используем “unknown” trace_id из init-state (GET), иначе каналы/устройства будут прилипать к случайному trace_id.
     if (
-      age <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC &&
+        age <= effectiveReuseWindowMs &&
       recent &&
       (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer' || recent.type === 'consumer')
     ) {
       recentEventsCache.set(id, { timestamp: now, trace_id: cachedTraceId, type: context?.type || 'unknown' });
       return cachedTraceId;
+    }
     }
   }
   
@@ -933,24 +1165,26 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
     // чтобы цепочки из нескольких скриптов попадали в один trace.
     let inheritedTraceId = null;
     let inheritedTs = -1;
-    for (const [recentId, recent] of recentEventsCache.entries()) {
-      if (!recent || typeof recent.timestamp !== 'number') continue;
-      const timeDiff = now - recent.timestamp;
-      if (timeDiff < 0 || timeDiff > RECENT_EVENT_WINDOW_MS) continue;
-      // Зачем: SOURCE (кнопка/датчик) часто не приходит с _context, поэтому recent.type будет "unknown".
-      // Чтобы собрать цепочку SOURCE → SCRIPT → ACTUATOR → CONSUMER, разрешаем наследование от "device"‑событий,
-      // но только если устройство действительно триггерит текущий скрипт.
-      const recentRole = getDeviceRole(recentId);
-      const canInherit =
-        (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') ||
-        // Зачем: некоторые скрипты (например, clock/schedule) могут попасть в recentEventsCache с type='unknown',
-        // но по роли это всё равно SCRIPT — даём шанс склейке цепочек скрипт→скрипт.
-        (recentRole === 'script') ||
-        (recentRole === 'device' && deviceTriggersScript(recentId, id));
-      if (!canInherit) continue;
-      if (recent.timestamp > inheritedTs && recent.trace_id) {
-        inheritedTs = recent.timestamp;
-        inheritedTraceId = recent.trace_id;
+    if (TEMPORAL_TRACE_CORRELATION_ENABLED) {
+      for (const [recentId, recent] of recentEventsCache.entries()) {
+        if (!recent || typeof recent.timestamp !== 'number') continue;
+        const timeDiff = now - recent.timestamp;
+        if (timeDiff < 0 || timeDiff > RECENT_EVENT_WINDOW_MS) continue;
+        // Зачем: SOURCE (кнопка/датчик) часто не приходит с _context, поэтому recent.type будет "unknown".
+        // Чтобы собрать цепочку SOURCE → SCRIPT → ACTUATOR → CONSUMER, разрешаем наследование от "device"‑событий,
+        // но только если устройство действительно триггерит текущий скрипт.
+        const recentRole = getDeviceRole(recentId);
+        const canInherit =
+          (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') ||
+          // Зачем: некоторые скрипты (например, clock/schedule) могут попасть в recentEventsCache с type='unknown',
+          // но по роли это всё равно SCRIPT — даём шанс склейке цепочек скрипт→скрипт.
+          (recentRole === 'script') ||
+          (recentRole === 'device' && deviceTriggersScript(recentId, id));
+        if (!canInherit) continue;
+        if (recent.timestamp > inheritedTs && recent.trace_id) {
+          inheritedTs = recent.timestamp;
+          inheritedTraceId = recent.trace_id;
+        }
       }
     }
 
@@ -1031,34 +1265,39 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
     }
   }
 
-  for (const [recentId, recentEvent] of recentEventsCache.entries()) {
-    const timeDiff = now - recentEvent.timestamp;
-    
-    // Если событие в пределах временного окна
-    if (timeDiff <= RECENT_EVENT_WINDOW_MS) {
-      // Проверяем связь через parent/bind/site
-      const device = getDeviceFields(id);
-      const recentDevice = getDeviceFields(recentId);
+  // Зачем: эвристическая склейка по времени (через recentEventsCache + parent/bind) часто даёт шум.
+  // bind мы уже обработали выше через “быструю” строгую связку по bind → recentEventsCache.get(bind),
+  // поэтому этот блок оставляем выключенным по умолчанию и включаем только для диагностики.
+  if (TEMPORAL_TRACE_CORRELATION_ENABLED) {
+    for (const [recentId, recentEvent] of recentEventsCache.entries()) {
+      const timeDiff = now - recentEvent.timestamp;
       
-      if (device && recentDevice) {
-        // Связь через parent
-        if (device.parent === recentId || recentDevice.parent === id) {
-          traceIdCache.set(id, recentEvent.trace_id);
-          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
-          return recentEvent.trace_id;
-        }
+      // Если событие в пределах временного окна
+      if (timeDiff <= RECENT_EVENT_WINDOW_MS) {
+        // Проверяем связь через parent/bind/site
+        const device = getDeviceFields(id);
+        const recentDevice = getDeviceFields(recentId);
+        
+        if (device && recentDevice) {
+          // Связь через parent
+          if (device.parent === recentId || recentDevice.parent === id) {
+            traceIdCache.set(id, recentEvent.trace_id);
+            recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+            return recentEvent.trace_id;
+          }
 
-        // Связь через bind (потребитель ↔ канал/актуатор)
-        // Зачем: у потребителя bind="MAC/dim/N", а у канала bind указывает обратно на UUID потребителя.
-        if (device.bind && device.bind === recentId) {
-          traceIdCache.set(id, recentEvent.trace_id);
-          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
-          return recentEvent.trace_id;
-        }
-        if (recentDevice.bind && recentDevice.bind === id) {
-          traceIdCache.set(id, recentEvent.trace_id);
-          recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
-          return recentEvent.trace_id;
+          // Связь через bind (потребитель ↔ канал/актуатор)
+          // Зачем: у потребителя bind="MAC/dim/N", а у канала bind указывает обратно на UUID потребителя.
+          if (device.bind && device.bind === recentId) {
+            traceIdCache.set(id, recentEvent.trace_id);
+            recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+            return recentEvent.trace_id;
+          }
+          if (recentDevice.bind && recentDevice.bind === id) {
+            traceIdCache.set(id, recentEvent.trace_id);
+            recentEventsCache.set(id, { timestamp: now, trace_id: recentEvent.trace_id, type: 'unknown' });
+            return recentEvent.trace_id;
+          }
         }
       }
     }
@@ -1115,7 +1354,16 @@ setInterval(() => {
       cleanedCount.scripts++;
     }
   }
-  
+
+  // Очистка schedulerTickTraceCache
+  // Зачем: предотвращение утечки памяти (tick-ключи живут недолго; достаточно пары секунд).
+  const tickExpiredThreshold = now - (RECENT_EVENT_WINDOW_MS * 2);
+  for (const [ts, v] of schedulerTickTraceCache.entries()) {
+    if (!v || typeof v.timestamp !== 'number' || v.timestamp < tickExpiredThreshold) {
+      schedulerTickTraceCache.delete(ts);
+    }
+  }
+
   // Очистка traceIdCache (зачем: удаление старых trace_id для предотвращения утечки памяти)
   for (const [id, traceId] of traceIdCache.entries()) {
     const recentEvent = recentEventsCache.get(id);
@@ -1330,7 +1578,7 @@ const handleActionSet = (message) => {
     // Чтобы device/actuator/consumer попали в тот же trace_id, что и синтетический SCRIPT,
     // сначала пробуем определить запуск скрипта по изменению устройства, и только потом считаем trace_id.
     if (SYNTHETIC_SCRIPT_EVENTS_ENABLED && payload.executed === undefined && payload.last_execution === undefined) {
-      checkAndGenerateScriptEvent(id, msgTimestamp);
+      checkAndGenerateScriptEvent(id, msgTimestamp, newState);
     }
 
     const traceId = generateTraceId(id, context, keyParam, msgTimestamp);
@@ -1341,10 +1589,11 @@ const handleActionSet = (message) => {
     if (isTriggerValueEvent) {
       const triggerScriptIds = [];
       const src = (newState && typeof newState === 'object') ? newState : payload;
-      for (const k of ['onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose']) {
-        if (src && typeof src[k] === 'string' && src[k]) triggerScriptIds.push(src[k]);
-      }
-      for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+
+      // Зачем: для value-событий от кнопки/DI нам нужен “клик”,
+      // а строковые триггеры (onDoppler/onChange/...) часто дают шум и лишние склейки.
+      // Поэтому для value учитываем только onClick/onClick2 (массовые сценарии кнопок).
+      for (const k of ['onClick', 'onClick2']) {
         const v = src ? src[k] : null;
         if (Array.isArray(v)) {
           for (const x of v) {
@@ -1356,7 +1605,7 @@ const handleActionSet = (message) => {
       if (typeof id === 'string' && id.includes(':') && !id.includes('/')) {
         const di = state.get(`${id}/di/1`);
         if (di && typeof di === 'object') {
-          for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+          for (const k of ['onClick', 'onClick2']) {
             const v = di[k];
             if (Array.isArray(v)) {
               for (const x of v) {
@@ -1371,6 +1620,9 @@ const handleActionSet = (message) => {
         recentEventsCache.set(scriptId, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
         const targets = getScriptTargetDevices(scriptId);
         for (const tid of targets) {
+          // Зачем: не прокидываем trace_id на вложенные скрипты (ветки on/off и др.) заранее —
+          // иначе синтетика может “выполнить” обе ветки и загрязнить trace.
+          if (getDeviceRole(tid) === 'script') continue;
           traceIdCache.set(tid, traceId);
           recentEventsCache.set(tid, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
         }
