@@ -177,6 +177,21 @@ const RULE_ACTUATOR_CHANGES = {
             return true; // Потребитель - логируем
           }
         }
+
+        // Зачем: устройства‑триггеры (кнопки/датчики), запускающие скрипты через onDoppler/onTrue/...,
+        // должны попадать в trace как SOURCE, иначе цепочка не собирается в ≥5 событий.
+        if (device && typeof device === 'object') {
+          const hasTrigger =
+            (typeof device.onDoppler === 'string' && device.onDoppler) ||
+            (typeof device.onTrue === 'string' && device.onTrue) ||
+            (typeof device.onFalse === 'string' && device.onFalse) ||
+            (typeof device.onChange === 'string' && device.onChange) ||
+            (typeof device.onOpen === 'string' && device.onOpen) ||
+            (typeof device.onClose === 'string' && device.onClose);
+          if (hasTrigger) {
+            return true;
+          }
+        }
         
         return false; // Не актуатор и не потребитель - не логируем
       }

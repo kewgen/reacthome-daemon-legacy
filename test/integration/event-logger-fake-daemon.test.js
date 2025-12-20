@@ -37,6 +37,15 @@ async function waitForFileContainsJsonLine(filePath, predicate, timeoutMs = 1000
   throw new Error(`Timeout waiting for matching JSON line in ${filePath}`);
 }
 
+async function waitForCondition(name, predicate, timeoutMs = 5000) {
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return;
+    await sleep(25);
+  }
+  throw new Error(`Timeout waiting for condition: ${name}`);
+}
+
 test('event-logger: пишет события и проставляет logger_pid (fake daemon)', { timeout: 20000 }, async (t) => {
   if (process.env.RUN_INTEGRATION !== '1') {
     t.skip('RUN_INTEGRATION!=1');
@@ -59,6 +68,7 @@ test('event-logger: пишет события и проставляет logger_p
   /** @type {WebSocket|null} */
   let client = null;
   let getReceived = false;
+  let listReceived = false;
 
   wss.on('connection', (ws) => {
     client = ws;
@@ -71,6 +81,7 @@ test('event-logger: пишет события и проставляет logger_p
       }
 
       if (msg && (msg.type === 'list' || msg.type === 'LIST')) {
+        listReceived = true;
         ws.send(JSON.stringify({ type: 'list', state: [[deviceId, now], [consumerId, now]] }));
         return;
       }
@@ -112,25 +123,19 @@ test('event-logger: пишет события и проставляет logger_p
     if (client) {
       try { client.terminate(); } catch {}
     }
+    // Зачем: не засоряем репо временными папками после теста.
+    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
   });
 
   // Ждём, пока логгер подключится и выполнит LIST/GET
-  const startWait = Date.now();
-  while (!client || !getReceived) {
-    if (Date.now() - startWait > 5000) {
-      throw new Error(`Timeout waiting for LIST/GET handshake. stdout=${stdout.slice(-2000)} stderr=${stderr.slice(-2000)}`);
-    }
-    await sleep(50);
-  }
+  await waitForCondition(
+    'LIST/GET handshake',
+    () => Boolean(client && listReceived && getReceived),
+    5000
+  );
 
-  // Ждём, пока логгер завершит начальную инициализацию (иначе следующие ACTION_SET будут восприняты как initial state)
-  const startInit = Date.now();
-  while (!stdout.includes('Восстановлено') && !stdout.includes('Инициализация state')) {
-    if (Date.now() - startInit > 5000) {
-      throw new Error(`Timeout waiting for initial state completion. stdout=${stdout.slice(-2000)} stderr=${stderr.slice(-2000)}`);
-    }
-    await sleep(50);
-  }
+  // Зачем: даём логгеру завершить обработку init-state (не завязываемся на stdout строках).
+  await sleep(300);
 
   // Триггерим изменение consumer, чтобы логгер сформировал событие и записал в файл
   client.send(JSON.stringify({ type: 'ACTION_SET', id: consumerId, payload: { type: 'socket_220', title: 'Увлажнение', value: true, timestamp: now + 1 } }));
@@ -147,6 +152,10 @@ test('event-logger: пишет события и проставляет logger_p
   assert.equal(found.logger_pid, child.pid);
   assert.equal(found.id, consumerId);
   assert.equal(found.param, 'value');
+  assert.ok(found.trace_id, 'trace_id должен быть заполнен');
+  assert.ok(found.device && typeof found.device === 'object', 'device должен быть объектом');
+  assert.equal(found.device.consumer, true);
+  assert.equal(found.device.human, 'Увлажнение');
 
   // Зачем: если логгер пишет ошибки, покажем их в тексте падения (для диагностики)
   assert.equal(stderr.trim(), '');

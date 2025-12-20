@@ -502,6 +502,15 @@ const determineScriptActionType = (scriptId, scriptState) => {
     return 'ACTION_UNKNOWN';
   }
   
+  // Зачем: для некоторых “веток” toggle (on/off) action[] может ссылаться на общий ACTION_TOGGLE,
+  // но по смыслу и для тестов нам важно видеть ACTION_ON/ACTION_OFF.
+  if (typeof scriptState.title === 'string' && scriptState.title) {
+    const t = scriptState.title.trim().toLowerCase();
+    if (t.endsWith(' on')) return 'ACTION_ON';
+    if (t.endsWith(' off')) return 'ACTION_OFF';
+    if (t.includes(' toggle')) return 'ACTION_TOGGLE';
+  }
+
   // Запуск по расписанию.
   if (scriptState.schedule) {
     return 'ACTION_SCHEDULE_START';
@@ -588,7 +597,23 @@ const generateSyntheticScriptEvent = (scriptId, timestamp, trace_id) => {
 // Зачем: создание trace_id и синтетического события когда скрипт только что запустился
 const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
   // 1. Генерируем trace_id для цепочки
-  const trace_id = uuidv4();
+  // Зачем: если устройство уже в активной цепочке (например CONSUMER только что сработал),
+  // то скрипт должен попасть в тот же trace_id, иначе канал/потребитель разъедутся по разным trace.
+  const now = (typeof timestamp === 'number' ? timestamp : Date.now());
+  let trace_id = null;
+  const recent = deviceId ? recentEventsCache.get(deviceId) : null;
+  if (recent && typeof recent.timestamp === 'number') {
+    const age = now - recent.timestamp;
+    if (age >= 0 && age <= RECENT_EVENT_WINDOW_MS && recent.trace_id) {
+      // Разрешаем наследование от consumer/script/schedule/timer (но не от "unknown" init-state).
+      if (recent.type === 'consumer' || recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') {
+        trace_id = recent.trace_id;
+      }
+    }
+  }
+  if (!trace_id) {
+    trace_id = uuidv4();
+  }
   
   // 2. Получаем целевые устройства скрипта
   const targetDevices = getScriptTargetDevices(scriptId);
@@ -827,7 +852,12 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
     const recent = recentEventsCache.get(id);
     const age = recent && typeof recent.timestamp === 'number' ? (now - recent.timestamp) : Infinity;
     // Зачем: не переносим trace_id “вечно”; если событие оторвалось по времени — это новая цепочка.
-    if (age <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC) {
+    // Также: не используем “unknown” trace_id из init-state (GET), иначе каналы/устройства будут прилипать к случайному trace_id.
+    if (
+      age <= SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC &&
+      recent &&
+      (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer' || recent.type === 'consumer')
+    ) {
       recentEventsCache.set(id, { timestamp: now, trace_id: cachedTraceId, type: context?.type || 'unknown' });
       return cachedTraceId;
     }
@@ -864,7 +894,13 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
       if (!recent || typeof recent.timestamp !== 'number') continue;
       const timeDiff = now - recent.timestamp;
       if (timeDiff < 0 || timeDiff > RECENT_EVENT_WINDOW_MS) continue;
-      if (recent.type !== 'script' && recent.type !== 'schedule' && recent.type !== 'timer') continue;
+      // Зачем: SOURCE (кнопка/датчик) часто не приходит с _context, поэтому recent.type будет "unknown".
+      // Чтобы собрать цепочку SOURCE → SCRIPT → ACTUATOR → CONSUMER, разрешаем наследование от "device"‑событий.
+      const recentRole = getDeviceRole(recentId);
+      const canInherit =
+        (recent.type === 'script' || recent.type === 'schedule' || recent.type === 'timer') ||
+        (recentRole === 'device');
+      if (!canInherit) continue;
       if (recent.timestamp > inheritedTs && recent.trace_id) {
         inheritedTs = recent.timestamp;
         inheritedTraceId = recent.trace_id;
@@ -927,6 +963,27 @@ const generateTraceId = (id, context, param, eventTimestamp) => {
   
   // Если trigger не определён - анализируем временные паттерны
   // Зачем: связываем события, произошедшие в течение короткого времени
+  // Быстрая связка по bind → trace_id bound устройства
+  // Зачем: канал/актуатор может идти без прямого trigger, но если он привязан (bind) к CONSUMER,
+  // то должен наследовать trace_id потребителя в пределах окна RECENT_EVENT_WINDOW_MS.
+  {
+    const device = getDeviceFields(id);
+    const bind = (device && typeof device.bind === 'string' && device.bind)
+      ? device.bind
+      : (context && typeof context.bind === 'string' && context.bind ? context.bind : null);
+    if (bind) {
+      const boundRecent = recentEventsCache.get(bind);
+      if (boundRecent && typeof boundRecent.timestamp === 'number') {
+        const age = now - boundRecent.timestamp;
+        if (age >= 0 && age <= RECENT_EVENT_WINDOW_MS && boundRecent.trace_id) {
+          traceIdCache.set(id, boundRecent.trace_id);
+          recentEventsCache.set(id, { timestamp: now, trace_id: boundRecent.trace_id, type: context?.type || 'unknown' });
+          return boundRecent.trace_id;
+        }
+      }
+    }
+  }
+
   for (const [recentId, recentEvent] of recentEventsCache.entries()) {
     const timeDiff = now - recentEvent.timestamp;
     
@@ -1115,8 +1172,11 @@ const handleActionSet = (message) => {
     const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
                           'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                           'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                          'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                           // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
                           'action', 'schedule', 'clock', 'timer', 'duration',
+                          // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
+                          'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
                           // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
                           'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
     for (const field of fieldsToKeep) {
@@ -1162,6 +1222,12 @@ const handleActionSet = (message) => {
       session: null,
       remote_ip: null
     };
+
+    // Зачем: bind может отсутствовать в state (особенно для каналов), но приходит в payload.
+    // Используем его для связности trace_id между CONSUMER и ACTUATOR channel.
+    if (payload && typeof payload.bind === 'string' && payload.bind) {
+      context.bind = payload.bind;
+    }
     
     // 3. Генерируем trace_id для трассировки
     // Зачем: определяем ключевой параметр для анализа (executed, last_execution или другой)
@@ -1170,19 +1236,41 @@ const handleActionSet = (message) => {
                      Object.keys(payload).find(k => k !== 'timestamp') || null;
     
     const msgTimestamp = payload.timestamp || Date.now();
+
+    // Зачем: для боевых логов _context часто отсутствует, и SCRIPT приходится выводить из изменений устройств.
+    // Чтобы device/actuator/consumer попали в тот же trace_id, что и синтетический SCRIPT,
+    // сначала пробуем определить запуск скрипта по изменению устройства, и только потом считаем trace_id.
+    if (SYNTHETIC_SCRIPT_EVENTS_ENABLED && payload.executed === undefined && payload.last_execution === undefined) {
+      checkAndGenerateScriptEvent(id, msgTimestamp);
+    }
+
     const traceId = generateTraceId(id, context, keyParam, msgTimestamp);
     context.trace_id = traceId;
+
+    // Зачем: если это CONSUMER и у него есть bind на канал/актуатор, прокидываем trace_id в канал.
+    // Это важно, когда WS сообщение по каналу приходит без payload.bind (в бою такое встречается),
+    // иначе канал окажется в другом trace_id, хотя физически связан с потребителем.
+    {
+      const deviceType = getDeviceTypeWithFallback(id);
+      const isConsumer = isConsumerDevice(deviceType);
+      if (isConsumer) {
+        const fields = getDeviceFields(id);
+        const bindId = (payload && typeof payload.bind === 'string' && payload.bind)
+          ? payload.bind
+          : (fields && typeof fields.bind === 'string' && fields.bind ? fields.bind : null);
+        if (bindId) {
+          traceIdCache.set(bindId, traceId);
+          recentEventsCache.set(bindId, { timestamp: msgTimestamp, trace_id: traceId, type: 'consumer' });
+        }
+        recentEventsCache.set(id, { timestamp: msgTimestamp, trace_id: traceId, type: 'consumer' });
+      }
+    }
     
     // Создаём чистый payload без timestamp для правильного сравнения
     const cleanPayload = { ...payload };
     delete cleanPayload.timestamp;
     
-    // Зачем: проверяем и генерируем синтетические события для скриптов
-    // Делаем это ДО processEvent, чтобы синтетическое событие создалось первым
-    // Зачем: timestamp берём из payload, чтобы синтетика и цепочки работали в терминах времени событий.
-    if (SYNTHETIC_SCRIPT_EVENTS_ENABLED) {
-      checkAndGenerateScriptEvent(id, msgTimestamp);
-    }
+    // Зачем: синтетика уже обработана выше для device-событий; для SCRIPT executed не генерируем синтетику повторно.
     
     // Обрабатываем событие (используем логику из event-log.js)
     // Зачем: передаем информацию о состоянии актуатора для обогащения событий
@@ -1883,8 +1971,11 @@ const connect = () => {
               const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
                                     'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                                     'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                                    'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                                     // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
                                     'action', 'schedule', 'clock', 'timer', 'duration',
+                                    // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
+                                    'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
                                     // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
                                     'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
               for (const field of fieldsToKeep) {

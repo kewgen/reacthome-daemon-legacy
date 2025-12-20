@@ -59,6 +59,36 @@ function getScriptTargetDeviceIds(stateLike, scriptId, opts = {}) {
       addId(p.id);
       addId(p.target);
 
+      // Зачем: многие action-объекты хранят целевые ссылки во вложенном payload.payload.*
+      // (например ACTION_ON/OFF → payload: { payload: { id: <deviceId> } }).
+      const pp = p.payload;
+      if (pp && typeof pp === 'object') {
+        addId(pp.id);
+        addId(pp.target);
+        if (Array.isArray(pp.test)) {
+          for (const t of pp.test) addId(t);
+        }
+        addId(pp.onOn);
+        addId(pp.onOff);
+        addId(pp.onTrue);
+        addId(pp.onFalse);
+        addId(pp.onOpen);
+        addId(pp.onClose);
+        addId(pp.onChange);
+        addId(pp.onDoppler);
+      }
+
+      // Зачем: ACTION_TOGGLE хранит список целевых устройств в payload.test[],
+      // без этого consumer не попадает в trace_id (пример: 6.D.L.3 Toggle).
+      if (Array.isArray(p.test)) {
+        for (const t of p.test) addId(t);
+      }
+
+      // Зачем: ветки toggle часто задаются как onOn/onOff (а не onTrue/onFalse),
+      // иначе "6.D.L.3 on/off" выпадают из цепочки целей.
+      addId(p.onOn);
+      addId(p.onOff);
+
       // Зачем: clock/timer/датчики запускают скрипты через onTrue/onFalse/...,
       // без этого "Ежеминутник" не связывается с устройствами и выпадает из OFF-трейса.
       addId(p.onTrue);
@@ -81,6 +111,15 @@ function getScriptTargetDeviceIds(stateLike, scriptId, opts = {}) {
         ];
         for (const devId of siteDevices) addId(devId);
       }
+    }
+  }
+
+  // Зачем: если целевое устройство привязано к каналу/актуатору через bind,
+  // добавляем и его, чтобы trace_id переносился на канал даже если канал-событие пришло раньше consumer.
+  for (const id of Array.from(targets)) {
+    const obj = stateLike.get(id);
+    if (obj && typeof obj === 'object' && typeof obj.bind === 'string' && obj.bind) {
+      targets.add(obj.bind);
     }
   }
 

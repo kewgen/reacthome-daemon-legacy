@@ -32,6 +32,17 @@ test('getScriptTargetDeviceIds: собирает target из id/ref/target/paylo
   assert.equal(out.has('dev6'), true);
 });
 
+test('getScriptTargetDeviceIds: собирает target из payload.payload.id (вложенный payload)', () => {
+  const state = makeState({
+    s1: { action: ['a1'] },
+    a1: { payload: { type: 'ACTION_ON', payload: { id: 'dev1' } } },
+    dev1: { type: 'light_220' }
+  });
+
+  const ids = getScriptTargetDeviceIds(state, 's1');
+  assert.ok(ids.has('dev1'));
+});
+
 test('getScriptTargetDeviceIds: резолвит onTrue → вложенный скрипт → конечное устройство', () => {
   const consumer = 'consumer-1';
   const state = makeState({
