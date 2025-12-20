@@ -70,31 +70,61 @@ function matchesExpected(event, expectedMsg, exactPaths) {
   return true;
 }
 
-function validateExpectations(traceEvents, outputSpec, policy) {
+function validateExpectations(traceEvents, outputSpec, policy, opts = {}) {
   const errors = [];
   const expectList = Array.isArray(outputSpec.expect) ? outputSpec.expect : [];
   const requirePresent = (policy && Array.isArray(policy.require_present)) ? policy.require_present : [];
 
-  let idx = 0;
-  for (const step of expectList) {
-    const expectedMsg = step.msg || {};
-    const exact = Array.isArray(step.exact) ? step.exact : [];
-    let found = null;
-    for (let i = idx; i < traceEvents.length; i++) {
-      const e = traceEvents[i];
-      if (matchesExpected(e, expectedMsg, exact)) {
-        found = { i, e };
-        break;
+  const ordered = opts.ordered !== false;
+  if (ordered) {
+    let idx = 0;
+    for (const step of expectList) {
+      const expectedMsg = step.msg || {};
+      const exact = Array.isArray(step.exact) ? step.exact : [];
+      let found = null;
+      for (let i = idx; i < traceEvents.length; i++) {
+        const e = traceEvents[i];
+        if (matchesExpected(e, expectedMsg, exact)) {
+          found = { i, e };
+          break;
+        }
+      }
+      if (!found) {
+        errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
+        continue;
+      }
+      idx = found.i + 1;
+      for (const fieldPath of requirePresent) {
+        if (deepGet(found.e, fieldPath) == null) {
+          errors.push(`policy: отсутствует поле ${fieldPath} у события "${step.name || 'без имени'}"`);
+        }
       }
     }
-    if (!found) {
-      errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
-      continue;
-    }
-    idx = found.i + 1;
-    for (const fieldPath of requirePresent) {
-      if (deepGet(found.e, fieldPath) == null) {
-        errors.push(`policy: отсутствует поле ${fieldPath} у события "${step.name || 'без имени'}"`);
+  } else {
+    // Зачем: если checks.full_chain.order=false, то важен набор событий в trace_id,
+    // а порядок в e2e может меняться из-за синтетики и порядка сообщений WS.
+    const used = new Set();
+    for (const step of expectList) {
+      const expectedMsg = step.msg || {};
+      const exact = Array.isArray(step.exact) ? step.exact : [];
+      let found = null;
+      for (let i = 0; i < traceEvents.length; i++) {
+        if (used.has(i)) continue;
+        const e = traceEvents[i];
+        if (matchesExpected(e, expectedMsg, exact)) {
+          found = { i, e };
+          break;
+        }
+      }
+      if (!found) {
+        errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
+        continue;
+      }
+      used.add(found.i);
+      for (const fieldPath of requirePresent) {
+        if (deepGet(found.e, fieldPath) == null) {
+          errors.push(`policy: отсутствует поле ${fieldPath} у события "${step.name || 'без имени'}"`);
+        }
       }
     }
   }
@@ -288,7 +318,11 @@ test('trace-chain: YAML сеты (Увлажнение)', { timeout: 30000 }, as
       for (const traceId of candidates) {
         const traceEvents = allEvents.filter((e) => e.trace_id === traceId).sort((a, b) => a.timestamp - b.timestamp);
         const errors = [];
-        errors.push(...validateExpectations(traceEvents, setSpec.output, scenario.policy));
+        const fullChain = Array.isArray(setSpec.output?.checks)
+          ? setSpec.output.checks.find((c) => c && c.type === 'full_chain')
+          : null;
+        const ordered = !(fullChain && fullChain.order === false);
+        errors.push(...validateExpectations(traceEvents, setSpec.output, scenario.policy, { ordered }));
         errors.push(...runChecks(traceEvents, { checks: setSpec.output?.checks || [] }));
         const score = errors.length;
         if (!best || score < best.score || (score === best.score && traceEvents.length > best.traceEvents.length)) {

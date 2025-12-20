@@ -630,6 +630,12 @@ const handleNewScriptExecution = (scriptId, deviceId, timestamp) => {
   // 4. Сохраняем trace_id для всех целевых устройств
   for (const devId of targetDevices) {
     traceIdCache.set(devId, trace_id);
+    // Зачем: целевое устройство/скрипт может прийти следующим событием и должен сразу подхватить trace_id,
+    // даже если у него ещё нет собственной записи в recentEventsCache.
+    const prev = recentEventsCache.get(devId);
+    if (!prev || (typeof prev.timestamp === 'number' && prev.timestamp <= timestamp)) {
+      recentEventsCache.set(devId, { timestamp, trace_id, type: 'script' });
+    }
   }
   
   // 5. Генерируем синтетическое событие executed
