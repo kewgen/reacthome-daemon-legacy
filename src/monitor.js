@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.55 (ручное управление версией)
+ * Версия: 1.0.56 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.55';
+const VERSION = '1.0.56';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -5135,15 +5135,16 @@ class TerminalKitStatusDisplay {
       this.cache.statsHash = null;
     }
     
+    // Зачем: Для выбранного устройства/канала нужно обновлять UI даже если ключевые поля не изменились —
+    // иначе ручной GET по Enter обновит lastUpdate, но интерфейс визуально «замрёт».
+    if (shouldUpdateDeviceInfo) {
+      this.updateDeviceInfo();
+    }
+
     // Обновляем отображение только если не идет навигация
     // Используем debounce для снижения нагрузки на CPU при множественных обновлениях
-    if (!this.isNavigating && stateChanged) {
-      if (shouldUpdateDeviceInfo) {
-        this.updateDeviceInfo();
-      }
+    if (!this.isNavigating && (stateChanged || shouldUpdateDeviceInfo)) {
       this.scheduleRender();
-    } else if (shouldUpdateDeviceInfo) {
-      this.updateDeviceInfo();
     }
   }
   
