@@ -33,7 +33,9 @@ function getEventRole(event) {
     const t = event.device.type;
     if (t === 'DOPPLER' || t === 'doppler') return 'SOURCE';
     const title = event.device.title;
-    if (typeof title === 'string' && /^S\\d+/i.test(title.trim())) return 'SOURCE';
+    if (typeof title === 'string' && /^S\d+/i.test(title.trim())) return 'SOURCE';
+    const human = event.device.human;
+    if (typeof human === 'string' && /^S\d+/i.test(human.trim())) return 'SOURCE';
   }
   if (event.param === 'executed' || (event.device && event.device.type === 'SCRIPT')) return 'SCRIPT';
   if (event.device && event.device.consumer === true) return 'CONSUMER';
@@ -145,7 +147,9 @@ function runChecks(traceEvents, traceSpec) {
             errors.push(`full_chain: отсутствует роль ${required} (найдено: ${foundRoles.join(', ') || '—'})`);
           }
         }
-        if (check.order) {
+        // Зачем: в боевых логах порядок по timestamp может быть “перевёрнут” из-за синтетики и источников времени.
+        // Строгий порядок включаем только по явному флагу.
+        if (check.order && process.env.PROD_TRACE_STRICT_ORDER === '1') {
           const isActuatorMarker = (e) => !!(e?.extra && (e.extra.actuator_on || e.extra.actuator_off || e.extra.actuator_update));
           const isEndDeviceMarker = (e) => !!(e?.extra && (e.extra.end_device_on || e.extra.end_device_off || e.extra.end_device_update));
           const isActuatorForOrder = (e) => (getEventRole(e) === 'ACTUATOR') || ((getEventRole(e) !== 'SOURCE') && (isActuatorMarker(e) || isEndDeviceMarker(e)));

@@ -1243,6 +1243,28 @@ const handleActionSet = (message) => {
     
     const msgTimestamp = payload.timestamp || Date.now();
 
+    // Зачем: триггер‑устройства (кнопки/датчики), запускающие скрипты через onDoppler/onTrue/...,
+    // должны открывать новый trace_id (SOURCE), иначе их легко “прилипить” к шумным соседним цепочкам.
+    // Также это позволяет заранее прокинуть trace_id в связанные скрипты/targets.
+    const isTriggerDevice = (() => {
+      if (!payload || typeof payload !== 'object') return false;
+      const hasTrigger =
+        (typeof payload.onDoppler === 'string' && payload.onDoppler) ||
+        (typeof payload.onTrue === 'string' && payload.onTrue) ||
+        (typeof payload.onFalse === 'string' && payload.onFalse) ||
+        (typeof payload.onChange === 'string' && payload.onChange) ||
+        (typeof payload.onOpen === 'string' && payload.onOpen) ||
+        (typeof payload.onClose === 'string' && payload.onClose);
+      return Boolean(hasTrigger);
+    })();
+
+    // Зачем: SOURCE фиксируем только по value (клик/сработка), не по humidity/temperature шуму.
+    const isTriggerValueEvent = isTriggerDevice && keyParam === 'value';
+
+    if (isTriggerValueEvent && !context.trace_id) {
+      context.trace_id = uuidv4();
+    }
+
     // Зачем: для боевых логов _context часто отсутствует, и SCRIPT приходится выводить из изменений устройств.
     // Чтобы device/actuator/consumer попали в тот же trace_id, что и синтетический SCRIPT,
     // сначала пробуем определить запуск скрипта по изменению устройства, и только потом считаем trace_id.
@@ -1252,6 +1274,24 @@ const handleActionSet = (message) => {
 
     const traceId = generateTraceId(id, context, keyParam, msgTimestamp);
     context.trace_id = traceId;
+
+    // Зачем: SOURCE → SCRIPT → (targets...) — заранее прокидываем trace_id в скрипты, которые запускает устройство.
+    // Это снижает зависимость от порядка прихода WS сообщений и окна RECENT_EVENT_WINDOW_MS.
+    if (isTriggerValueEvent) {
+      const triggerScriptIds = [];
+      for (const k of ['onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose']) {
+        if (typeof payload[k] === 'string' && payload[k]) triggerScriptIds.push(payload[k]);
+      }
+      for (const scriptId of triggerScriptIds) {
+        traceIdCache.set(scriptId, traceId);
+        recentEventsCache.set(scriptId, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
+        const targets = getScriptTargetDevices(scriptId);
+        for (const tid of targets) {
+          traceIdCache.set(tid, traceId);
+          recentEventsCache.set(tid, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
+        }
+      }
+    }
 
     // Зачем: если это CONSUMER и у него есть bind на канал/актуатор, прокидываем trace_id в канал.
     // Это важно, когда WS сообщение по каналу приходит без payload.bind (в бою такое встречается),

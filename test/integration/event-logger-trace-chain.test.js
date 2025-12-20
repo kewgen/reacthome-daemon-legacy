@@ -39,7 +39,9 @@ function getEventRole(event) {
     const t = event.device.type;
     if (t === 'DOPPLER' || t === 'doppler') return 'SOURCE';
     const title = event.device.title;
-    if (typeof title === 'string' && /^S\\d+/i.test(title.trim())) return 'SOURCE';
+      if (typeof title === 'string' && /^S\d+/i.test(title.trim())) return 'SOURCE';
+      const human = event.device.human;
+      if (typeof human === 'string' && /^S\d+/i.test(human.trim())) return 'SOURCE';
   }
   if (event.param === 'executed' || (event.device && event.device.type === 'SCRIPT')) return 'SCRIPT';
   if (event.device && event.device.consumer === true) return 'CONSUMER';
