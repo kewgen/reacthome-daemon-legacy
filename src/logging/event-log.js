@@ -45,10 +45,13 @@ const checkDiskSpace = async () => {
   }
 };
 
+// Зачем: локальные файлы событий логгера храним в logs/logger (единая точка для event-logger/OpenSearch)
+const LOG_DIR = path.join(process.cwd(), 'logs', 'logger');
+
 // Очистка старых логов
 const cleanupOldLogs = async (aggressive = false) => {
   try {
-    const logDir = path.join(VAR, 'log');
+    const logDir = LOG_DIR;
     if (!fs.existsSync(logDir)) return;
     
     const files = await fs.promises.readdir(logDir);
@@ -116,7 +119,7 @@ const cleanupOldLogs = async (aggressive = false) => {
 // Проверка размера папки логов
 const checkLogDirSize = async () => {
   try {
-    const logDir = path.join(VAR, 'log');
+    const logDir = LOG_DIR;
     if (!fs.existsSync(logDir)) return 0;
     
     const files = await fs.promises.readdir(logDir);
@@ -137,7 +140,7 @@ const checkLogDirSize = async () => {
 
 // Инициализация файла лога
 const initLogFile = async () => {
-  const logDir = path.join(VAR, 'log');
+  const logDir = LOG_DIR;
   if (!fs.existsSync(logDir)) {
     fs.mkdirSync(logDir, { recursive: true });
   }
@@ -602,7 +605,7 @@ const writeBatch = async () => {
   }
   
   // Проверка размера текущего файла перед записью
-  const logDir = path.join(VAR, 'log');
+  const logDir = LOG_DIR;
   try {
     if (currentLogFile && fs.existsSync(currentLogFile)) {
       const stats = await fs.promises.stat(currentLogFile);

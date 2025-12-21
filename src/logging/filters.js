@@ -177,7 +177,7 @@ const RULE_ACTUATOR_CHANGES = {
             return true; // Потребитель - логируем
           }
         }
-
+        
         // Зачем: устройства‑триггеры (кнопки/датчики), запускающие скрипты через onDoppler/onTrue/...,
         // должны попадать в trace как SOURCE, иначе цепочка не собирается в ≥5 событий.
         if (device && typeof device === 'object') {

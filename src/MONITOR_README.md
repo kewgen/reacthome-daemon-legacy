@@ -74,12 +74,12 @@ REACTHOME_WS_URI=ws://192.168.1.100:3000
 WS_REQUEST_LOGGING=1 node src/monitor.js
 
 # Логи будут записаны в:
-# - logs/ws-in.log  (входящие сообщения)
-# - logs/ws-out.log (исходящие запросы)
+# - logs/monitor/ws-in.log  (входящие сообщения)
+# - logs/monitor/ws-out.log (исходящие запросы)
 ```
 
 ### WS_LOG_DIR
-Директория для логов WebSocket (по умолчанию: `logs/`).
+Директория для логов WebSocket (по умолчанию: `logs/monitor/`).
 
 ```bash
 WS_LOG_DIR=/custom/path/to/logs WS_REQUEST_LOGGING=1 node src/monitor.js
@@ -139,11 +139,12 @@ cat logs/ws-out.log | grep "GET запрос" | wc -l  # Количество GE
 
 ### Проблема: Monitor не подключается к WebSocket
 ```bash
-# Проверить, что daemon запущен:
+# ВАЖНО: НЕ ЗАПУСКАТЬ ЛОКАЛЬНЫЙ DAEMON
 pm2 list
 
-# Проверить логи daemon:
-pm2 logs daemon
+# Вместо этого убедитесь, что основной демон доступен по WebSocket:
+#   REACTHOME_WS_URI=ws://<ip-основного-демона>:3000 node src/monitor.js
+# и/или проверьте сеть/порт 3000 на стороне основного демона.
 
 # Проверить порт:
 netstat -an | grep 3000
@@ -193,7 +194,7 @@ const STATE_REQUEST_TIMEOUT = 30000; # было 10000
 
 - Node.js 18+ (на Raspberry Pi v20.19.2+)
 - npm 8+
-- Запущенный daemon с WebSocket сервером на порту 3000
+- Доступный основной демон с WebSocket сервером на порту 3000 (локальный daemon из этого репозитория НЕ нужен)
 
 ## 🎯 Использование в production
 

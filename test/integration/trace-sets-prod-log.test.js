@@ -77,30 +77,30 @@ function matchExpectations(traceEvents, outputSpec, policy, opts = {}) {
 
   const ordered = opts.ordered !== false;
   if (ordered) {
-    let idx = 0;
-    for (const step of expectList) {
-      const expectedMsg = step.msg || {};
-      const exact = Array.isArray(step.exact) ? step.exact : [];
-      let found = null;
-      for (let i = idx; i < traceEvents.length; i++) {
-        const e = traceEvents[i];
-        if (matchesExpected(e, expectedMsg, exact)) {
-          found = { i, e };
-          break;
-        }
-      }
-      if (!found) {
-        errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
-        continue;
-      }
-      used.add(found.i);
-      idx = found.i + 1;
-      for (const fieldPath of requirePresent) {
-        if (deepGet(found.e, fieldPath) == null) {
-          errors.push(`policy: отсутствует поле ${fieldPath} у события "${step.name || 'без имени'}"`);
-        }
+  let idx = 0;
+  for (const step of expectList) {
+    const expectedMsg = step.msg || {};
+    const exact = Array.isArray(step.exact) ? step.exact : [];
+    let found = null;
+    for (let i = idx; i < traceEvents.length; i++) {
+      const e = traceEvents[i];
+      if (matchesExpected(e, expectedMsg, exact)) {
+        found = { i, e };
+        break;
       }
     }
+    if (!found) {
+      errors.push(`expect: не найден шаг "${step.name || 'без имени'}"`);
+      continue;
+    }
+      used.add(found.i);
+    idx = found.i + 1;
+    for (const fieldPath of requirePresent) {
+      if (deepGet(found.e, fieldPath) == null) {
+        errors.push(`policy: отсутствует поле ${fieldPath} у события "${step.name || 'без имени'}"`);
+      }
+    }
+  }
   } else {
     // Зачем: в боевых логах порядок сообщений от демона и “синтетических” SCRIPT может отличаться,
     // но нам важно наличие полного набора событий в одном trace_id.
