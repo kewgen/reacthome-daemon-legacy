@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.57 (ручное управление версией)
+ * Версия: 1.0.58 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.57';
+const VERSION = '1.0.58';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -826,6 +826,8 @@ const LOW_BANDWIDTH_MODE = isSSHSession() || process.env.MONITOR_LOW_BANDWIDTH =
 
 // Зачем: Увеличиваем интервал обновления для SSH сессий, чтобы снизить нагрузку на узкий канал
 const UPDATE_INTERVAL = LOW_BANDWIDTH_MODE ? 60000 : 30000; // 60 сек для SSH, 30 сек локально
+// Зачем: Если пользователь не взаимодействовал с монитором более 5 минут, переходим в режим энергосбережения
+const IDLE_TIMEOUT = 300000; // 5 минут бездействия для перехода в энергосберегающий режим
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
 const SHOW_DAEMON_DUID = process.env.MONITOR_SHOW_DAEMON_DUID === '1' || process.env.MONITOR_SHOW_DAEMON_DUID === 'true'; // Зачем: Флаг для отображения duid демона в заголовке (по умолчанию выключен)
@@ -1892,6 +1894,7 @@ class TerminalKitStatusDisplay {
     this.lastHeaderText = ''; // Кэш заголовка для предотвращения лишних перерисовок
     this.lastHeaderTime = 0; // Время последнего обновления времени в заголовке
     this.lastHeaderTimeString = null; // Кэш строки времени для SSH режима
+    this.lastInputTime = Date.now(); // Время последнего взаимодействия с монитором
     this.selectionCheckInterval = null;
     this.filterIndex = 0; // Индекс выбранного фильтра
     this.filterRows = [];
@@ -1999,6 +2002,9 @@ class TerminalKitStatusDisplay {
   }
   
   handleKey(name, matches, data) {
+    // Зачем: Обновляем время последнего взаимодействия при любом нажатии клавиши
+    this.lastInputTime = Date.now();
+    
     if (name === 'CTRL_C' || name === 'q' || name === 'Q') {
       this.stop();
       return;
@@ -2701,7 +2707,11 @@ class TerminalKitStatusDisplay {
     // Зачем: Визуально отмечаем включение LOW_BANDWIDTH_MODE жёлтым кругом вместо зелёного
     let status;
     if (this.isConnected) {
-      status = LOW_BANDWIDTH_MODE ? '🟡 ПОДКЛЮЧЕНО' : '🟢 ПОДКЛЮЧЕНО';
+      if (this.isIdle()) {
+        status = '💤 ПАУЗА';
+      } else {
+        status = LOW_BANDWIDTH_MODE ? '🟡 ПОДКЛЮЧЕНО' : '🟢 ПОДКЛЮЧЕНО';
+      }
     } else {
       status = '🔴 ОТКЛЮЧЕНО';
     }
@@ -5156,6 +5166,11 @@ class TerminalKitStatusDisplay {
     this.render();
   }
   
+  // Зачем: Проверяем, находится ли монитор в режиме бездействия (для экономии трафика)
+  isIdle() {
+    return (Date.now() - this.lastInputTime) > IDLE_TIMEOUT;
+  }
+  
   // Устанавливаем ссылку на WebSocket для запроса отсутствующих устройств
   setWebSocket(ws) {
     this.ws = ws;
@@ -5811,6 +5826,11 @@ async function main() {
       
       // Периодически обновляем состояние всех устройств и каналов
       updateIntervalId = setInterval(() => {
+        // Зачем: Не делаем тяжелый запрос для всех устройств, если пользователь не активен (энергосбережение)
+        if (display.isIdle && display.isIdle()) {
+          return;
+        }
+        
         const deviceIds = [];
         
         devices.forEach(device => {
