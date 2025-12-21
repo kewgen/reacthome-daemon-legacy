@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.58 (ручное управление версией)
+ * Версия: 1.0.59 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.58';
+const VERSION = '1.0.59';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -826,8 +826,8 @@ const LOW_BANDWIDTH_MODE = isSSHSession() || process.env.MONITOR_LOW_BANDWIDTH =
 
 // Зачем: Увеличиваем интервал обновления для SSH сессий, чтобы снизить нагрузку на узкий канал
 const UPDATE_INTERVAL = LOW_BANDWIDTH_MODE ? 60000 : 30000; // 60 сек для SSH, 30 сек локально
-// Зачем: Если пользователь не взаимодействовал с монитором более 5 минут, переходим в режим энергосбережения
-const IDLE_TIMEOUT = 300000; // 5 минут бездействия для перехода в энергосберегающий режим
+// Зачем: Если пользователь не взаимодействовал с монитором более 1 минуты, переходим в режим энергосбережения
+const IDLE_TIMEOUT = 60000; // 1 минута бездействия для перехода в энергосберегающий режим
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
 const SHOW_DAEMON_DUID = process.env.MONITOR_SHOW_DAEMON_DUID === '1' || process.env.MONITOR_SHOW_DAEMON_DUID === 'true'; // Зачем: Флаг для отображения duid демона в заголовке (по умолчанию выключен)
