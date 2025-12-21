@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.56 (ручное управление версией)
+ * Версия: 1.0.57 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.56';
+const VERSION = '1.0.57';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -829,7 +829,10 @@ const UPDATE_INTERVAL = LOW_BANDWIDTH_MODE ? 60000 : 30000; // 60 сек для 
 const STATE_REQUEST_TIMEOUT = 10000; // Таймаут для получения всех ответов на GET запрос
 const WS_REQUEST_LOGGING = process.env.WS_REQUEST_LOGGING === '1' || process.env.WS_REQUEST_LOGGING === 'true'; // Включение детального логирования WebSocket запросов
 const SHOW_DAEMON_DUID = process.env.MONITOR_SHOW_DAEMON_DUID === '1' || process.env.MONITOR_SHOW_DAEMON_DUID === 'true'; // Зачем: Флаг для отображения duid демона в заголовке (по умолчанию выключен)
-const WS_LOG_DIR = process.env.WS_LOG_DIR || path.join(process.cwd(), 'logs'); // Директория для логов WebSocket
+// Зачем: Все файловые логи монитора храним в одном месте (по умолчанию logs/monitor)
+const MONITOR_LOG_DIR = process.env.MONITOR_LOG_DIR || null;
+// Зачем: сохраняем обратную совместимость с WS_LOG_DIR, но по умолчанию используем logs/monitor
+const WS_LOG_DIR = process.env.WS_LOG_DIR || MONITOR_LOG_DIR || path.join(process.cwd(), 'logs', 'monitor'); // Директория для логов WebSocket монитора
 const WS_LOG_FILE_IN = path.join(WS_LOG_DIR, 'ws-in.log'); // Файл для входящих сообщений (ответы от сервера)
 const WS_LOG_FILE_OUT = path.join(WS_LOG_DIR, 'ws-out.log'); // Файл для исходящих сообщений (запросы к серверу)
 
