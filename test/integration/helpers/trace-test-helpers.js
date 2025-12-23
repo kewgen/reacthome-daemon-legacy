@@ -105,7 +105,12 @@ function buildInitStateMap(initInput) {
   for (const msg of initInput) {
     if (!msg || msg.type !== 'action_set') continue;
     assert(msg.id, 'action_set должен содержать id');
-    map.set(String(msg.id), msg.payload || {});
+    // Зачем: в реальном WS по одному id могут приходить частичные обновления (дельты),
+    // и состояние восстанавливается через merge (oldState + payload).
+    // В тестовых сценариях это позволяет собрать реалистичное init-состояние из нескольких реальных сообщений.
+    const id = String(msg.id);
+    const prev = map.get(id) || {};
+    map.set(id, { ...prev, ...(msg.payload || {}) });
   }
   return map;
 }
@@ -230,7 +235,10 @@ function buildInitStateMapFromWsInit(wsInitSteps) {
     const msg = s.msg;
     if (msg.type !== 'ACTION_SET') continue;
     if (!msg.id) continue;
-    map.set(String(msg.id), msg.payload || {});
+    // Зачем: как и в бою, несколько ACTION_SET по одному id должны объединяться в состояние.
+    const id = String(msg.id);
+    const prev = map.get(id) || {};
+    map.set(id, { ...prev, ...(msg.payload || {}) });
   }
   return map;
 }

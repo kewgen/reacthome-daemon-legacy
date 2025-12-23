@@ -154,7 +154,7 @@ test('event-logger: пишет события и проставляет logger_p
   client.send(JSON.stringify({ type: 'ACTION_SET', id: consumerId, payload: { type: 'socket_220', title: 'Увлажнение', value: true, timestamp: now + 1 } }));
 
   const today = new Date().toISOString().split('T')[0];
-  const logFile = path.join(tmpRoot, 'var', 'log', `events-${today}.jsonl`);
+  const logFile = path.join(tmpRoot, 'logs', 'logger', 'events', `events-${today}.jsonl`);
 
   const found = await waitForFileContainsJsonLine(
     logFile,
@@ -242,7 +242,10 @@ test('event-logger: consumer.value не должен переиспользов�
     if (client) {
       try { client.terminate(); } catch {}
     }
-    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    // Зачем: режим отладки теста — можно оставить tmpRoot, чтобы посмотреть events-*.jsonl.
+    if (process.env.KEEP_TMP !== '1') {
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    }
   });
 
   await waitForCondition('LIST/GET handshake', () => Boolean(client && listReceived && getReceived), 5000);
@@ -253,7 +256,7 @@ test('event-logger: consumer.value не должен переиспользов�
   client.send(JSON.stringify({ type: 'ACTION_SET', id: consumerId, payload: { type: 'socket_220', title: 'FlapConsumer', value: false, timestamp: tsOff } }));
 
   const today = new Date().toISOString().split('T')[0];
-  const logFile = path.join(tmpRoot, 'var', 'log', `events-${today}.jsonl`);
+  const logFile = path.join(tmpRoot, 'logs', 'logger', 'events', `events-${today}.jsonl`);
 
   const evOn = await waitForFileContainsJsonLine(
     logFile,
@@ -341,14 +344,17 @@ test('event-logger: не назначает trace_id для SITE/PROJECT/DAEMON 
     if (client) {
       try { client.terminate(); } catch {}
     }
-    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    // Зачем: режим отладки теста — можно оставить tmpRoot, чтобы посмотреть events-*.jsonl.
+    if (process.env.KEEP_TMP !== '1') {
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    }
   });
 
   await waitForCondition('LIST/GET handshake', () => Boolean(client && listReceived && getReceived), 5000);
   await sleep(300);
 
   const today = new Date().toISOString().split('T')[0];
-  const logFile = path.join(tmpRoot, 'var', 'log', `events-${today}.jsonl`);
+  const logFile = path.join(tmpRoot, 'logs', 'logger', 'events', `events-${today}.jsonl`);
 
   for (const id of ids) {
     // Зачем: такие события могут быть отфильтрованы и не попасть в лог событий вообще.
@@ -378,6 +384,10 @@ test('event-logger: toggle выбирает ровно одну ветку (ON x
   const baseTmp = path.join(process.cwd(), 'var', 'tmp');
   fs.mkdirSync(baseTmp, { recursive: true });
   const tmpRoot = fs.mkdtempSync(path.join(baseTmp, 'event-logger-toggle-branch-test-'));
+  if (process.env.KEEP_TMP === '1') {
+    // Зачем: локальная диагностика падений в CI/локально.
+    console.log(`[KEEP_TMP] tmpRoot=${tmpRoot}`);
+  }
 
   const wss = new WebSocket.Server({ port: 0 });
   await new Promise((resolve) => wss.once('listening', resolve));
@@ -470,17 +480,22 @@ test('event-logger: toggle выбирает ровно одну ветку (ON x
     if (client) {
       try { client.terminate(); } catch {}
     }
-    try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    // Зачем: режим отладки теста — можно оставить tmpRoot, чтобы посмотреть events-*.jsonl.
+    if (process.env.KEEP_TMP !== '1') {
+      try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
+    }
   });
 
   await waitForCondition('LIST/GET handshake', () => Boolean(client && listReceived && getReceived), 5000);
   await sleep(400);
 
   const today = new Date().toISOString().split('T')[0];
-  const logFile = path.join(tmpRoot, 'var', 'log', `events-${today}.jsonl`);
+  const logFile = path.join(tmpRoot, 'logs', 'logger', 'events', `events-${today}.jsonl`);
 
   // Фаза 1: ON
+  // Зачем: реальный клик S4 — это 255 (down) → 0 (up). Без up новое нажатие не меняет value и не логируется.
   client.send(JSON.stringify({ type: 'ACTION_SET', id: s4Id, payload: { value: 255, timestamp: now + 10 } }));
+  client.send(JSON.stringify({ type: 'ACTION_SET', id: s4Id, payload: { value: 0, timestamp: now + 11 } }));
   client.send(JSON.stringify({ type: 'ACTION_SET', id: consumerId, payload: { type: 'light_220', value: true, timestamp: now + 20, bind: actuatorId } }));
   client.send(JSON.stringify({ type: 'ACTION_SET', id: actuatorId, payload: { value: 255, timestamp: now + 21, bind: consumerId } }));
 
@@ -492,6 +507,7 @@ test('event-logger: toggle выбирает ровно одну ветку (ON x
 
   // Фаза 2: OFF (в новом trace_id от нового клика)
   client.send(JSON.stringify({ type: 'ACTION_SET', id: s4Id, payload: { value: 255, timestamp: now + 5000 } }));
+  client.send(JSON.stringify({ type: 'ACTION_SET', id: s4Id, payload: { value: 0, timestamp: now + 5001 } }));
   client.send(JSON.stringify({ type: 'ACTION_SET', id: consumerId, payload: { type: 'light_220', value: false, timestamp: now + 5010, bind: actuatorId } }));
   client.send(JSON.stringify({ type: 'ACTION_SET', id: actuatorId, payload: { value: 0, timestamp: now + 5011, bind: consumerId } }));
 
