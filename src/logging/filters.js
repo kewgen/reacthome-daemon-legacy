@@ -44,8 +44,17 @@ const SENSOR_PARAMS = [
   'co2'           // CO2
 ];
 
+// Параметры источников (DI-count)
+// Зачем: в бою клик/удержание S4 часто приходит как инкремент счётчиков в DI,
+// и это должно логироваться как SOURCE для полноты трассировки.
+const DI_COUNT_PARAMS = [
+  'onClick1Count',
+  'onClick2Count',
+  'onHoldCount',
+];
+
 // Все параметры для логирования
-const ALL_PARAMS = [...ACTUATOR_PARAMS, ...SENSOR_PARAMS];
+const ALL_PARAMS = [...ACTUATOR_PARAMS, ...SENSOR_PARAMS, ...DI_COUNT_PARAMS];
 
 // Специальные параметры (всегда логируются)
 const SPECIAL_PARAMS = [
@@ -200,11 +209,13 @@ const RULE_ACTUATOR_CHANGES = {
           }
 
           // Зачем: в бою “клик” может приходить по базовому устройству (MAC),
-          // а конфигурация триггеров лежит в DI канале `${id}/di/1`.
+          // а конфигурация триггеров лежит в DI каналах `${id}/di/1..4`.
           // Если DI содержит onClick/onHold — считаем базовое устройство SOURCE и логируем value.
           if (typeof id === 'string' && id.includes(':') && !id.includes('/')) {
-            const di = state.get(`${id}/di/1`);
-            if (di && typeof di === 'object') {
+            // Зачем: у S4 4 кнопки, и триггеры могут быть не только в di/1.
+            for (let i = 1; i <= 4; i += 1) {
+              const di = state.get(`${id}/di/${i}`);
+              if (!di || typeof di !== 'object') continue;
               for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
                 const v = di[k];
                 if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x)) {

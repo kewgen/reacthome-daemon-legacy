@@ -83,6 +83,9 @@ function resolveSignalSourceFromWs(message, deps) {
 
   const ts = typeof payload.timestamp === 'number' ? payload.timestamp : Date.now();
   const baseId = typeof id === 'string' ? id.split('/')[0] : String(id);
+  // Зачем: у S4 4 кнопки, и события могут приходить по разным DI каналам (/di/1..4).
+  // Если кэшировать жест только по baseId, то жесты разных кнопок будут смешиваться (один gesture_id на всех).
+  const cacheKey = (typeof id === 'string' && id.includes('/di/')) ? id : baseId;
 
   const stateObj = state && typeof state.get === 'function' ? state.get(id) : null;
   const stateBase = state && typeof state.get === 'function' ? state.get(baseId) : null;
@@ -125,9 +128,31 @@ function resolveSignalSourceFromWs(message, deps) {
 
   // Триггеры скриптов храним обычно в DI snapshot
   const triggers = { onClick: [], onClick2: [], onHold: [] };
-  const diObj = state && typeof state.get === 'function' ? state.get(`${baseId}/di/1`) : null;
-  if (diObj && typeof diObj === 'object') {
-    mergeTriggers(triggers, diObj);
+  // Зачем: клик/удержание может приходить как по baseId (S4), так и по конкретному DI каналу (/di/4),
+  // и триггеры могут лежать как в diSelf (конкретная кнопка), так и в любом из DI каналов (/di/1..4).
+  const diSelf = (state && typeof state.get === 'function' && typeof id === 'string' && id.includes('/di/'))
+    ? state.get(id)
+    : null;
+  const diAll = [];
+  if (state && typeof state.get === 'function' && typeof baseId === 'string' && baseId.includes(':')) {
+    for (let i = 1; i <= 4; i += 1) {
+      diAll.push(state.get(`${baseId}/di/${i}`));
+    }
+  }
+
+  const hasAny = (t) => (Array.isArray(t.onClick) && t.onClick.length) || (Array.isArray(t.onClick2) && t.onClick2.length) || (Array.isArray(t.onHold) && t.onHold.length);
+
+  if (diSelf && typeof diSelf === 'object') {
+    // Зачем: если событие пришло по конкретной кнопке (/di/k), берём триггеры именно от неё (не смешиваем с другими).
+    mergeTriggers(triggers, diSelf);
+    base.linked.inferred_from = 'di';
+    // Зачем: фолбэк на случай неполного/устаревшего diSelf — пробуем добрать триггеры из di/1..4.
+    if (!hasAny(triggers)) {
+      for (const di of diAll) mergeTriggers(triggers, di);
+    }
+  } else if (diAll.some((x) => x && typeof x === 'object')) {
+    // Зачем: если событие пришло по baseId, триггеры могут быть размазаны по 4 кнопкам.
+    for (const di of diAll) mergeTriggers(triggers, di);
     base.linked.inferred_from = 'di';
   } else {
     mergeTriggers(triggers, stateBase);
@@ -157,7 +182,7 @@ function resolveSignalSourceFromWs(message, deps) {
           'click';
 
     if (cache && typeof cache.get === 'function' && typeof cache.set === 'function') {
-      const st = cache.get(baseId) || { active: null, last_up_ts: null, last_click_up_ts: null };
+      const st = cache.get(cacheKey) || { active: null, last_up_ts: null, last_click_up_ts: null };
       const ck = base.action.click_kind;
       const prevKey = `last_count_${ck}`;
       const prevCount = st[prevKey];
@@ -165,12 +190,12 @@ function resolveSignalSourceFromWs(message, deps) {
       if (prevCount === countVal && typeof st.last_count_ts === 'number' && (ts - st.last_count_ts) <= DEFAULT_GESTURE_MAX_IDLE_MS && st.last_count_gesture_id) {
         base.action.gesture_id = st.last_count_gesture_id;
       } else {
-        base.action.gesture_id = `${baseId}:${countKey}:${String(countVal)}`;
+        base.action.gesture_id = `${cacheKey}:${countKey}:${String(countVal)}`;
         st[prevKey] = countVal;
         st.last_count_ts = ts;
         st.last_count_gesture_id = base.action.gesture_id;
       }
-      cache.set(baseId, st);
+      cache.set(cacheKey, st);
       base.meta = { confidence: 'high', reason: `s4_di_${countKey}` };
       return base;
     }
@@ -193,7 +218,7 @@ function resolveSignalSourceFromWs(message, deps) {
     return base;
   }
 
-  const st = cache.get(baseId) || {
+  const st = cache.get(cacheKey) || {
     active: null,
     last_up_ts: null,
     last_click_up_ts: null
@@ -232,7 +257,7 @@ function resolveSignalSourceFromWs(message, deps) {
       st.last_up_ts = ts;
       st.last_click_up_ts = ts;
       st.active = null;
-      cache.set(baseId, st);
+      cache.set(cacheKey, st);
 
       base.meta = { confidence: 'medium', reason: 's4_value_up' };
       return base;
@@ -241,14 +266,14 @@ function resolveSignalSourceFromWs(message, deps) {
     base.action.phase = 'up';
     base.action.click_kind = 'unknown';
     base.meta = { confidence: 'low', reason: 's4_up_without_active' };
-    cache.set(baseId, st);
+    cache.set(cacheKey, st);
     return base;
   }
 
   // DOWN / MOVE
   if (!st.active) {
     st.active = {
-      gesture_id: `${baseId}:${ts}`,
+      gesture_id: `${cacheKey}:${ts}`,
       down_ts: ts,
       last_ts: ts,
       last_value: value,
@@ -259,7 +284,7 @@ function resolveSignalSourceFromWs(message, deps) {
     base.action.click_kind = 'press';
     base.action.gesture_id = st.active.gesture_id;
     st.last_up_ts = null;
-    cache.set(baseId, st);
+    cache.set(cacheKey, st);
     base.meta = { confidence: 'medium', reason: 's4_value_down' };
     return base;
   }
@@ -270,7 +295,7 @@ function resolveSignalSourceFromWs(message, deps) {
   if (typeof value === 'number' && (st.active.max_value == null || value > st.active.max_value)) st.active.max_value = value;
   st.active.last_ts = ts;
   st.active.last_value = value;
-  cache.set(baseId, st);
+  cache.set(cacheKey, st);
 
   base.action.phase = 'move';
   base.action.click_kind = (st.active.changes >= 1) ? 'dimming' : 'press';
