@@ -106,7 +106,30 @@ function resolveSignalSourceFromWs(message, deps) {
   }
 
   // Сенсоры (простое правило: наличие измерений в payload)
-  for (const k of ['doppler', 'motion', 'temperature', 'humidity', 'co2', 'pressure']) {
+  // Зачем: автономные допплеры (LD2410 и др.) часто шлют данные в поле "value".
+  // Если у устройства в стейте есть onDoppler, значит value — это допплер‑измерение.
+  if (Object.prototype.hasOwnProperty.call(payload, "value") && stateBase && stateBase.onDoppler) {
+    base.kind = "sensor";
+    base.channel = "sensor";
+    base.description = "Измерение датчика (doppler)";
+    base.action = {
+      phase: "unknown",
+      value: payload.value,
+      gesture_id: null,
+      click_kind: "unknown",
+      duration_ms: null,
+    };
+    base.meta = { confidence: "high", reason: "payload.value + state.onDoppler" };
+
+    const dopplerScript = stateBase.onDoppler;
+    if (typeof dopplerScript === "string" && dopplerScript) {
+      base.linked.trigger_scripts.onClick.push(dopplerScript);
+      base.linked.inferred_from = "device";
+    }
+    return base;
+  }
+
+  for (const k of ["doppler", "motion", "temperature", "humidity", "co2", "pressure"]) {
     if (Object.prototype.hasOwnProperty.call(payload, k)) {
       base.kind = 'sensor';
       base.channel = 'sensor';

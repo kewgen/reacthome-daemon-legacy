@@ -27,6 +27,7 @@ const {
   NUMERIC_PARAMS
 } = require('./event-log');
 const filters = require('./filters');
+const muters = require('./muters');
 const opensearch = require('./opensearch');
 const { ensureLoggerPid } = require('./event-meta'); // Зачем: единая точка заполнения logger_pid + юнит‑тесты
 const { getScriptTargetDeviceIds } = require('./script-targets'); // Зачем: корректный резолв onTrue/onFalse и вложенных скриптов
@@ -1849,8 +1850,9 @@ const handleActionSet = (message) => {
         (typeof src.onTrue === 'string' && src.onTrue) ||
         (typeof src.onFalse === 'string' && src.onFalse) ||
         (typeof src.onChange === 'string' && src.onChange) ||
-        (typeof src.onOpen === 'string' && src.onOpen) ||
-        (typeof src.onClose === 'string' && src.onClose);
+        (typeof src.onOpen === "string" && src.onOpen) ||
+        (typeof src.onClose === "string" && src.onClose) ||
+        (typeof src.onDoppler === "string" && src.onDoppler);
 
       const hasArrayTrigger = (() => {
         // Зачем: реальные DI/кнопки часто хранят скрипты как массивы: onClick: ["<scriptId>", ...]
@@ -1868,12 +1870,12 @@ const handleActionSet = (message) => {
       // Чтобы не зависеть от наличия DI событий в логе, резолвим триггеры через init snapshot.
       if (typeof baseId === 'string' && baseId.includes(':')) {
         // 1) Если событие пришло по DI, в state может быть полный DI snapshot с onClick/onHold.
-        if (typeof id === 'string' && id.includes('/di/')) {
+        if (typeof id === "string" && id.includes("/di/")) {
           const diSelf = state.get(id);
-          if (diSelf && typeof diSelf === 'object') {
-            for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+          if (diSelf && typeof diSelf === "object") {
+            for (const k of ["onClick", "onClick2", "onHold", "onOn", "onOff", "onDoppler"]) {
               const v = diSelf[k];
-              if (Array.isArray(v) && v.some((x) => typeof x === 'string' && x)) return true;
+              if (Array.isArray(v) && v.some((x) => typeof x === "string" && x)) return true;
             }
           }
         }
@@ -1920,52 +1922,46 @@ const handleActionSet = (message) => {
     if ((isS4Value || isS4Count) && signalSource?.action?.gesture_id) {
       const gid = signalSource.action.gesture_id;
       const existing = gestureTraceCache.get(gid);
+      
+      // 1) Если это продолжение того же жеста (move/up) - используем существующий trace_id
       if (existing && existing.trace_id) {
         context.trace_id = normalizeTraceId(existing.trace_id);
         existing.last_ts = msgTimestamp;
         gestureTraceCache.set(gid, existing);
-      } else if (signalSource.action.phase === 'down' && !context.trace_id) {
-        // Зачем: в бою иногда эффект (SCRIPT/CONSUMER) приходит РАНЬШЕ источника (S4),
-        // и синтетика успевает открыть trace_id без SOURCE. Тогда SOURCE “опаздывает” и стартует новый trace,
-        // что выглядит как “украденный трейс у соседа”.
-        // Исправление: если связанные скрипты (onClick/onHold/...) УЖЕ имеют свежий trace_id,
-        // подцепляем SOURCE к нему (строго по явным связям, с маленьким окном по времени).
-        const recoverWindowMs = 1500;
-        const candidateScriptIds = [];
-        const s4t = (signalSource && signalSource.linked && signalSource.linked.trigger_scripts)
-          ? signalSource.linked.trigger_scripts
-          : null;
-        if (s4t) {
-          for (const x of (Array.isArray(s4t.onClick) ? s4t.onClick : [])) candidateScriptIds.push(x);
-          for (const x of (Array.isArray(s4t.onClick2) ? s4t.onClick2 : [])) candidateScriptIds.push(x);
-          for (const x of (Array.isArray(s4t.onHold) ? s4t.onHold : [])) candidateScriptIds.push(x);
-        } else {
-          const di = state.get(`${baseId}/di/1`);
-          if (di && typeof di === 'object') {
-            for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
-              const v = di[k];
-              if (Array.isArray(v)) for (const x of v) if (typeof x === 'string' && x) candidateScriptIds.push(x);
-            }
-          }
-        }
-        const uniq = Array.from(new Set(candidateScriptIds.filter(Boolean)));
+      } 
+      // 2) Если это начало жеста (down), пробуем "восстановление" только если трейс сиротский
+      else if (signalSource.action.phase === 'down' && !context.trace_id) {
+        const recoverWindowMs = 800; // Уменьшили окно (было 1500)
+        const candidateScriptIds = collectTriggerScriptIds({ id, baseId, payload, newState, signalSource });
+        
         let recovered = null;
-        for (const sid of uniq) {
-          const cached = normalizeTraceId(traceIdCache.get(sid));
+        for (const sid of candidateScriptIds) {
+          const cachedTid = normalizeTraceId(traceIdCache.get(sid));
           const recent = recentEventsCache.get(sid);
-          if (!cached || !recent || typeof recent.timestamp !== 'number') continue;
+          if (!cachedTid || !recent || typeof recent.timestamp !== 'number') continue;
+          
           const age = msgTimestamp - recent.timestamp;
           if (age < 0 || age > recoverWindowMs) continue;
-          if (recent.trace_id !== cached) continue;
+          
+          // ВАЖНО: Проверяем, нет ли у этого трейса уже другого источника (защита от "кражи")
+          const traceRecent = recentEventsCache.get(cachedTid);
+          if (traceRecent && traceRecent.type === 'source') {
+            logDebug(`🚫 Отказ в восстановлении trace ${cachedTid.slice(0,8)} для ${id.slice(0,8)}: у трейса уже есть источник`);
+            continue;
+          }
+
           if (!recovered || recent.timestamp > recovered.ts) {
-            recovered = { trace_id: cached, ts: recent.timestamp, sid };
+            recovered = { trace_id: cachedTid, ts: recent.timestamp, sid };
           }
         }
 
-        const newTrace = normalizeTraceId(recovered?.trace_id) || uuidv4();
-        context.trace_id = newTrace;
-        gestureTraceCache.set(gid, { trace_id: newTrace, last_ts: msgTimestamp });
+        if (recovered) {
+          log(`✅ SOURCE ${id.slice(0,8)} восстановил trace_id ${recovered.trace_id.slice(0,8)} от скрипта ${recovered.sid.slice(0,8)}`);
+          context.trace_id = recovered.trace_id;
+          gestureTraceCache.set(gid, { trace_id: recovered.trace_id, last_ts: msgTimestamp });
+        }
       }
+
       // Зачем: на release закрываем жест, чтобы следующий клик стартовал новый trace_id.
       if (signalSource.action.phase === 'up') {
         gestureTraceCache.delete(gid);
@@ -2481,6 +2477,13 @@ const sendEvent = (event) => {
   // Зачем: записываем событие в локальный файл для резервного хранения
   writeEventToFile(eventWithMeta);
   
+  // Зачем: проверяем, не мьютировано ли событие для OpenSearch (например, шум допплера)
+  // Мьютированные события остаются в локальном файле, но не грузят OpenSearch
+  const isMuted = muters.shouldMuteOpenSearch(eventWithMeta);
+  if (isMuted) {
+    return;
+  }
+
   // Зачем: не отправляем “по одному событию” — это приводит к шторма запросов и росту задержек при сетевых сбоях.
   // Вместо этого складываем в буфер и отправляем батчами.
   addToBuffer(eventWithMeta);
