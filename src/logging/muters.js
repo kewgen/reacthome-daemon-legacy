@@ -18,7 +18,7 @@
  */
 
 // Порог по умолчанию для допплера (если не указан в устройстве)
-const DEFAULT_DOPPLER_THRESHOLD = 15;
+const DEFAULT_DOPPLER_THRESHOLD = 0;
 
 /**
  * Правило 1: Допплеровский шум

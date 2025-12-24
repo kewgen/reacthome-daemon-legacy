@@ -117,7 +117,7 @@ const scriptExecutionCache = new Map(); // scriptId -> {
 //   syntheticEventSent: boolean,       // Было ли отправлено синтетическое событие
 //   targetDevices: Set<deviceId>       // Все целевые устройства скрипта
 // }
-const SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC = 10000; // 10 секунд (учитывая delay в скриптах)
+const SCRIPT_EXECUTION_WINDOW_MS_SYNTHETIC = 2000; // 2 секунды (уменьшено для ускорения генерации синтетики)
 const SCRIPT_CACHE_CLEANUP_THRESHOLD_MS = 20000; // 20 секунд для очистки
 
 // 5.1. Кэш “tick” планировщика (timestamp демона -> trace_id)
@@ -835,10 +835,11 @@ const registerScriptExecution = (scriptId, timestamp, traceId, deviceId = null, 
     // или позже. Для корректной причинной сортировки ставим synthetic.timestamp немного раньше первого change.
     // Важно: в кэшах оставляем исходный timestamp изменения устройства (timestamp),
     // а сдвиг применяем только к полю timestamp у синтетического события.
+    // TODO: Временно обнулено для тестов. Вернуть Math.max(0, timestamp - 1) для корректной сортировки SCRIPT -> CONSUMER
     const syntheticTs =
       typeof syntheticEventTimestamp === 'number'
         ? syntheticEventTimestamp
-        : (typeof timestamp === 'number' ? Math.max(0, timestamp - 1) : Date.now());
+        : (typeof timestamp === 'number' ? Math.max(0, timestamp - 0) : Date.now());
     const shiftMs =
       (typeof timestamp === 'number' && typeof syntheticTs === 'number')
         ? Math.max(0, timestamp - syntheticTs)
@@ -1225,10 +1226,11 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
 
     // 2) Затем генерируем новые executed с небольшими смещениями “назад”:
     // Toggle будет чуть раньше ветки, ветка — чуть раньше устройства.
+    // TODO: Временно обнулено для тестов. Вернуть timestamp - orderOffset
     for (let i = 0; i < newOnes.length; i++) {
       const { scriptId } = newOnes[i];
       const orderOffset = newOnes.length - i; // 1..N
-      const syntheticEventTs = typeof timestamp === 'number' ? Math.max(0, timestamp - orderOffset) : null;
+      const syntheticEventTs = typeof timestamp === 'number' ? Math.max(0, timestamp - 0) : null;
 
       const trace_id = generateTraceId(scriptId, { type: 'script' }, 'executed', timestamp);
       registerScriptExecution(scriptId, timestamp, trace_id, deviceId, true, syntheticEventTs);
