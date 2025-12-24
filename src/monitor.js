@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.59 (ручное управление версией)
+ * Версия: 1.0.60 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.59';
+const VERSION = '1.0.60';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -4925,6 +4925,71 @@ class TerminalKitStatusDisplay {
         }
       } else {
         info.push(`  ⚠️  Не привязан к модулю (bind отсутствует)`);
+      }
+    }
+    
+    // Резолвинг параметров для ACTION_DOPPLER_HANDLE (обработчик допплера)
+    // Зачем: Эти устройства управляют логикой срабатывания допплеров (пороги, скрипты)
+    const isDopplerHandler = device.type === 'ACTION_DOPPLER_HANDLE';
+    if (isDopplerHandler && state) {
+      info.push('');
+      info.push(`📡 Обработчик допплера:`);
+      
+      const payload = state.payload || {};
+      const sourceId = payload.id;
+      const high = payload.high;
+      const low = payload.low;
+      
+      // Пороги
+      info.push(`  Пороги срабатывания:`);
+      info.push(`    Высокий (high): ${high !== undefined ? high : '—'}`);
+      info.push(`    Низкий (low): ${low !== undefined ? low : '—'}`);
+      
+      // Источник данных
+      if (sourceId) {
+        info.push('');
+        info.push(`  Источник данных:`);
+        info.push(`    ID: ${sourceId}`);
+        
+        const sourceDevice = this.allDevices.find(d => d.id === sourceId);
+        if (sourceDevice) {
+          const sourceName = sourceDevice.code || sourceDevice.title || sourceDevice.name || sourceId;
+          info.push(`    Устройство: ${sourceName}`);
+          
+          const sourceState = this.deviceStates.get(sourceId)?.state;
+          if (sourceState) {
+            const val = sourceState.value;
+            const status = sourceState.ready ? '🟢' : (sourceState.online ? '🟡' : '🔴');
+            info.push(`    Текущее значение: ${status} ${val !== undefined ? val : '—'}`);
+          }
+        }
+      }
+      
+      // Скрипты
+      info.push('');
+      info.push(`  📜 Сценарии:`);
+      
+      const dopplerScripts = [
+        { key: 'onHighThreshold', name: '🚀 Высокий порог' },
+        { key: 'onLowThreshold', name: '🏃 Низкий порог' },
+        { key: 'onQuiet', name: '🤫 Тишина' }
+      ];
+      
+      dopplerScripts.forEach(s => {
+        const scriptId = payload[s.key];
+        if (scriptId) {
+          const scriptDev = this.allDevices.find(d => d.id === scriptId);
+          const scriptName = scriptDev?.title || scriptDev?.code || scriptId.substring(0, 8) + '...';
+          info.push(`    ${s.name}: ${scriptName}`);
+        } else {
+          info.push(`    ${s.name}: —`);
+        }
+      });
+      
+      // Активность
+      if (state.active !== undefined) {
+        info.push('');
+        info.push(`  Статус: ${state.active ? '⚠️  АКТИВЕН' : '💤 Ожидание'}`);
       }
     }
     
