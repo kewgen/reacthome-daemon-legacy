@@ -2205,15 +2205,19 @@ const handleActionSet = (message) => {
     
     // Зачем: синтетика уже обработана выше для device-событий; для SCRIPT executed не генерируем синтетику повторно.
     
-    // Зачем: если это запуск скрипта (реальный от демона), регистрируем его выполнение.
-    // Это прокинет trace_id всем таргетам и свяжет их с этим скриптом в одну цепочку.
+    // Признак: нужно ли принудительно залогировать событие (например, HANDSHAKE script.executed)
+    let forceLogForEvent = false;
+
+    // Зачем: если это запуск скрипта (реальный от демона или handshake с executed:true),
+    // регистрируем его выполнение и помечаем для принудительного логирования.
     if (getDeviceRole(id) === 'script' && payload && payload.executed === true) {
       registerScriptExecution(id, msgTimestamp, traceId, null, false);
+      forceLogForEvent = true;
     }
-    
+
     // Обрабатываем событие (используем логику из event-log.js)
-    // Зачем: передаем информацию о состоянии актуатора для обогащения событий
-    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo);
+    // Передаём forceLogForEvent, чтобы обходить фильтры для важных script executed из handshake.
+    processEvent(id, oldState, newState, context, cleanPayload, actuatorStateInfo, forceLogForEvent);
     
   } catch (error) {
     logError('Ошибка обработки ACTION_SET:', error.message, error.stack);
@@ -2222,7 +2226,7 @@ const handleActionSet = (message) => {
 
 // Обработка события (логика из event-log.js)
 // Зачем: обработка событий с обогащением информацией о включении/выключении устройств
-const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null) => {
+const processEvent = (id, oldState, newState, context, changedPayload = null, actuatorStateInfo = null, forceLog = false) => {
   if (!id || !newState || typeof newState !== 'object') return;
   
   // Если передан changedPayload, логируем только параметры из payload
@@ -2414,7 +2418,8 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
     };
     
     // Проверка через типизированную систему фильтров
-    const shouldLog = filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorOrConsumer);
+    // Если forceLog=true — обходим фильтры и логируем событие.
+    const shouldLog = forceLog || filters.shouldLogEvent(param, oldValue, newValue, id, isActuatorOrConsumer);
     if (!shouldLog) {
       // Зачем: временное логирование для отладки фильтров
       if (id === '8828b19b-55b6-4f88-ac6b-20c41b02f1ad') {

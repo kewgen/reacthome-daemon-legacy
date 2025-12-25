@@ -445,14 +445,14 @@ const isNumericParam = (param) => {
 // Получение человекочитаемого названия из объекта (title/code/name через "/")
 const getHumanName = (obj) => {
   if (!obj || typeof obj !== 'object') return null;
-  
+
   const parts = [];
   if (obj.title) parts.push(obj.title);
   if (obj.code) parts.push(obj.code);
   if (obj.name) parts.push(obj.name);
-  
-  const result = parts.length > 0 ? parts.join('/') : null;
-  
+
+  const result = parts.length > 0 ? parts.join('|') : null;
+
   return result;
 };
 
