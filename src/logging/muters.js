@@ -51,10 +51,29 @@ const RULE_DOPPLER_NOISE = {
 };
 
 /**
+ * Правило 2: Heartbeat timeout ошибки
+ * Мьютит ошибки heartbeat timeout, так как они не критичны и система автоматически восстанавливается.
+ */
+const RULE_HEARTBEAT_TIMEOUT = {
+  id: 'heartbeat_timeout',
+  name: 'Heartbeat timeout ошибки',
+  description: 'Мьютить ошибки heartbeat timeout (система автоматически восстанавливается)',
+  enabled: true,
+  check: (event) => {
+    // Зачем: heartbeat timeout ошибки логируются как ERROR, но не критичны для системы.
+    // Система автоматически перезапускает соединение, поэтому эти ошибки создают шум в логах.
+    return event.level === 'ERROR' &&
+           event.message &&
+           event.message.includes('Heartbeat timeout: pong не получен вовремя');
+  }
+};
+
+/**
  * Список всех правил мьютирования
  */
 const MUTE_RULES = [
-  RULE_DOPPLER_NOISE
+  RULE_DOPPLER_NOISE,
+  RULE_HEARTBEAT_TIMEOUT
 ];
 
 /**

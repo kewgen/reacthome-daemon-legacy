@@ -276,7 +276,8 @@ const ensureIndexMapping = async (indexName) => {
                 title: { type: 'keyword' },
                 code: { type: 'keyword' },
                 name: { type: 'keyword' },
-                site: { type: 'text' } // Используем text для совместимости с существующим маппингом
+                site: { type: 'text' }, // Используем text для совместимости с существующим маппингом
+                consumer: { type: 'boolean' } // Зачем: позволяет искать шторы/потребителей по endDevice.consumer=true при dynamic=false
               }
             },
             extra: {
@@ -426,6 +427,40 @@ const ensureIndexMapping = async (indexName) => {
         // Зачем: не логируем - слишком частое событие, засоряет логи
       } catch (err) {
         // Игнорируем ошибки - поле может уже существовать
+      }
+
+      // Пробуем добавить endDevice (включая consumer)
+      // Зачем: шторы и другие потребители для каналов group/do/dim часто приходят как endDevice.*; при dynamic=false без маппинга их нельзя найти в OpenSearch.
+      try {
+        const endDeviceField = {
+          properties: {
+            endDevice: {
+              properties: {
+                id: { type: 'keyword' },
+                type: { type: 'keyword' },
+                human: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+                title: { type: 'keyword' },
+                code: { type: 'keyword' },
+                name: { type: 'keyword' },
+                site: { type: 'text' }, // Зачем: сохраняем совместимость со старым типом поля site (если он уже text)
+                consumer: { type: 'boolean' }
+              }
+            }
+          }
+        };
+        const endDeviceUrl = `${OPENSEARCH_URL}/${indexName}/_mapping`;
+        const endDeviceResponse = await fetchWithTimeout(endDeviceUrl, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Basic ${Buffer.from(`${OPENSEARCH_USER}:${OPENSEARCH_PASSWORD}`).toString('base64')}`
+          },
+          body: JSON.stringify(endDeviceField),
+          agent: getHttpsAgent()
+        });
+        // Зачем: не логируем - слишком частое событие, засоряет логи
+      } catch (err) {
+        // Игнорируем ошибки - поле может уже существовать или конфликтовать по типам в старом индексе
       }
       
       // ВАЖНО: extra с enabled: false нельзя изменить для существующего индекса

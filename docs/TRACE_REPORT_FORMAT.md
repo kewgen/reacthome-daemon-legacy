@@ -7,9 +7,7 @@
 Каждая цепочка выводится как отдельный блок:
 
 ```markdown
-<trace_id> [⚠️ >10 шагов]
-<ISO_TIMESTAMP>
-
+<ISO_TIMESTAMP> <trace_id> [⚠️ >10 шагов]
 > <Элемент_1> (0ms) → <Элемент_2> (<offset_ms>) → <Элемент_N> (<offset_ms>)
 ```
 
@@ -39,7 +37,6 @@
 
 ## Пример
 
-357fca28-2d74-4b0e-9c8c-2acc315e496d
-2025-12-24T19:08:26.238Z
 
+2025-12-24T19:08:26.238Z 357fca28-2d74-4b0e-9c8c-2acc315e496d
 > S4 Душ / press(0ms) → Свет/2.D.LED.6 Душ / consumer(1056ms) → 2.D.LED.6 toggle / script(1058ms) → light on душ / script(1059ms) → D7 / dim/1 / actuator (1060ms)

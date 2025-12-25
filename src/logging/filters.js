@@ -34,7 +34,10 @@ const ACTUATOR_PARAMS = [
   'fan_speed',    // Скорость вентилятора
   'mode',         // Режим работы
   'direction',    // Направление
-  'setpoint'      // Уставка
+  'setpoint',     // Уставка
+  'level',         // Уровень (для штор/жалюзи)
+  'state',         // Статус (для штор: open/close/stop)
+  'position'      // Позиция (для штор: 0-100)
 ];
 
 // Параметры сенсоров
@@ -180,7 +183,7 @@ const RULE_ACTUATOR_CHANGES = {
             'socket_220', 'valve_heating', 'valve_water',
             'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
             'curtains', 'curtain', 'blind', 'blinds', 'roller',
-            'multiroom',
+            'multiroom', 'NOVA'
           ];
           if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
             return true; // Потребитель - логируем

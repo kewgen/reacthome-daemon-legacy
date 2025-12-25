@@ -208,8 +208,9 @@ const getDeviceTypeWithFallback = (id) => {
       return parent.type;
     }
     
-    // Если это канал DO или DIM - считать актуатором по умолчанию
-    if (id.includes('/do/') || id.includes('/dim/')) {
+    // Если это канал DO/DIM/GROUP/AO - считать актуатором по умолчанию
+    // Зачем: шторы и некоторые группы управляются через shield group/*, а вентиляторы через ao/* (аналоговый выход).
+    if (id.includes('/do/') || id.includes('/dim/') || id.includes('/group/') || id.includes('/ao/')) {
       return 'ACTUATOR_CHANNEL'; // Специальный маркер для каналов-актуаторов
     }
   }
@@ -239,11 +240,12 @@ const isActuatorDevice = (id) => {
   }
   
   // Проверить, является ли это каналом
-  const isChannel = id.includes('/do/') || id.includes('/di/') || id.includes('/dim/');
+  // Зачем: group/* используется для штор, ao/* — для аналоговых вентиляторов/приводов.
+  const isChannel = id.includes('/do/') || id.includes('/di/') || id.includes('/dim/') || id.includes('/group/') || id.includes('/ao/');
   
-  // Для каналов: DO и DIM - актуаторы, DI - сенсоры (не логируем)
+  // Для каналов: DO/DIM/GROUP/AO - актуаторы, DI - сенсоры (не логируем)
   if (isChannel) {
-    return id.includes('/do/') || id.includes('/dim/');
+    return id.includes('/do/') || id.includes('/dim/') || id.includes('/group/') || id.includes('/ao/');
   }
   
   // Для корневых устройств - проверка по типу
@@ -253,15 +255,11 @@ const isActuatorDevice = (id) => {
   // Зачем: потребители также должны логироваться как актуаторы при включении/выключении
   if (typeof deviceType === 'string') {
     const actuatorStringTypes = [
-      'light_220',
-      'socket_220',
-      'fan',
-      'ac',
-      'warm_floor',
-      'valve_water',
-      'valve_heating',
-      'boiler',
-      'pump'
+      'light_220', 'light_led', 'light_rgb',
+      'socket_220', 'fan', 'ac', 'warm_floor',
+      'valve_water', 'valve_heating', 'boiler', 'pump',
+      'curtains', 'curtain', 'blind', 'blinds', 'roller',
+      'multiroom', 'nova'
     ];
     if (actuatorStringTypes.includes(deviceType.toLowerCase())) {
       return true;
@@ -273,46 +271,16 @@ const isActuatorDevice = (id) => {
       'light_220', 'light_LED', 'light_RGB', 'light_led',
       'socket_220', 'valve_heating', 'valve_water',
       'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
-      'thermostat', 'hygrostat', 'co2_stat',
       'curtains', 'curtain', 'blind', 'blinds', 'roller',
-      'multiroom',
+      'multiroom', 'NOVA'
     ];
     return CONSUMER_TYPES.includes(deviceType);
   }
   
-  // Числовые типы актуаторов
+  // Числовые типы актуаторов (синхронизировано с src/monitor.js SHIELD_ACTUATOR_TYPES)
   const actuatorTypes = [
-    0x0a, // DEVICE_TYPE_DO8
-    0x0b, // DEVICE_TYPE_DO16
-    0x0c, // DEVICE_TYPE_DI16_DO8
-    0x0d, // DEVICE_TYPE_DO8_DI16
-    0x11, // DEVICE_TYPE_DO12
-    0x23, // DEVICE_TYPE_RELAY_2
-    0x25, // DEVICE_TYPE_SMART_4G
-    0x26, // DEVICE_TYPE_SMART_4GD
-    0x27, // DEVICE_TYPE_SMART_4A
-    0x2a, // DEVICE_TYPE_SMART_4AM
-    0xa0, // DEVICE_TYPE_RELAY_6
-    0xa1, // DEVICE_TYPE_RELAY_12
-    0xa2, // DEVICE_TYPE_RELAY_24
-    0xa3, // DEVICE_TYPE_DIM_4
-    0xa4, // DEVICE_TYPE_DIM_8
-    0xa5, // DEVICE_TYPE_LANAMP
-    0xa7, // DEVICE_TYPE_RELAY_2_DIN
-    0xa9, // DEVICE_TYPE_AO_4_DIN
-    0xaa, // DEVICE_TYPE_MIX_2
-    0xab, // DEVICE_TYPE_MIX_1
-    0xac, // DEVICE_TYPE_MIX_1_RS
-    0xad, // DEVICE_TYPE_DIM_12_LED_RS
-    0xae, // DEVICE_TYPE_RELAY_12_RS
-    0xaf, // DEVICE_TYPE_DIM_8_RS
-    0xb3, // DEVICE_TYPE_DIM_12_AC_RS
-    0xb4, // DEVICE_TYPE_DIM_12_DC_RS
-    0xb5, // DEVICE_TYPE_MIX_6x12_RS
-    0xb6, // DEVICE_TYPE_DIM_1_AC_RS
-    0x0e, // DEVICE_TYPE_DIM4
-    0x0f, // DEVICE_TYPE_DIM8
-    0x41  // DEVICE_TYPE_MIX_H
+    0x0a, 0x0b, 0x0e, 0x0f, 0x23, 0xa0, 0xa1, 0xa2, 0xa3, 0xa4, 0xa5, 0xa7, 0xa9, 0xac, 0xad, 0xae, 0xaf, 0xb3, 0xb4, 0xb5, 0xb6, 0xab,
+    0x11, 0x25, 0x26, 0x27, 0x2a, 0x2c, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b, 0x41, 0xaa
   ];
   
   return actuatorTypes.includes(deviceType);

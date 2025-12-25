@@ -77,9 +77,9 @@ const sortedTraceIds = Object.keys(traces)
     const minTs = arr.length ? Math.min(...arr.map((e) => e.timestamp || 0)) : 0;
     return { traceId, minTs };
   })
-  .sort((a, b) => b.minTs - a.minTs)
-  .slice(0, 10)
-  .map((x) => x.traceId);
+    .sort((a, b) => b.minTs - a.minTs)
+    .slice(0, 50)
+    .map((x) => x.traceId);
 
 sortedTraceIds.forEach(traceId => {
   const traceEvents = (traces[traceId] || []).sort((a, b) => a.timestamp - b.timestamp);
@@ -87,7 +87,12 @@ sortedTraceIds.forEach(traceId => {
   const isoTime = new Date(startTime).toISOString();
   
   const steps = traceEvents.map(event => {
-    const humanName = event.device?.human || event.device?.code || event.id;
+    // Зачем: для цепочек, где конечным шагом является потребитель (например, шторы),
+    // используем endDevice.human, иначе в отчёте остаётся только "R1 / group/4" и создаётся впечатление, что потребителя нет.
+    const hasConsumerEndDevice = Boolean(event.endDevice && event.endDevice.consumer === true);
+    const humanName = hasConsumerEndDevice
+      ? (event.endDevice?.human || event.endDevice?.code || event.endDevice?.id || event.id)
+      : (event.device?.human || event.device?.code || event.id);
     let actionType = event.param;
     
     // Зачем: Переводим техническое 'value' в понятные 'on'/'off' для актуаторов
@@ -109,6 +114,12 @@ sortedTraceIds.forEach(traceId => {
       actionType = `doppler${crossKind ? `_${crossKind}` : ''}${trig ? `:${trig}` : ''}`;
     }
     
+    // Зачем: если событие описывает потребителя через endDevice (consumer:true), помечаем шаг как consumer.
+    // Это упрощает поиск "штор" в трассах и делает цепочку более читаемой.
+    if (hasConsumerEndDevice) {
+      actionType = 'consumer';
+    }
+
     const offset = event.timestamp - startTime;
     return `${humanName} / ${actionType} (${offset}ms)`;
   });

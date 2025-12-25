@@ -2103,6 +2103,24 @@ const handleActionSet = (message) => {
       context.trace_id = uuidv4();
     }
 
+    // Зачем: сохраняем исходный timestamp WS-сообщения в контексте,
+    // чтобы “реальные” события (в т.ч. SCRIPT executed) писались с правильным временем,
+    // а не с Date.now(), иначе ломается порядок в цепочках.
+    context.event_timestamp = msgTimestamp;
+
+    // Проверяем, есть ли реальные изменения в параметрах (с учетом мьютов и равенства old/new)
+    // Зачем: если устройство прислало те же значения, что уже есть в базе — это "шум",
+    // который не должен генерировать события или синтетические скрипты.
+    const hasRealChanges = Object.keys(payload).some(param => {
+      if (param === 'timestamp' || param === 'modified') return false;
+      const oldValue = oldState[param];
+      const newValue = payload[param];
+      return filters.shouldLogEvent(param, oldValue, newValue, id, (tid) => {
+        const type = getDeviceTypeWithFallback(tid);
+        return isActuatorDevice(tid) || isConsumerDevice(type);
+      });
+    });
+
     // Зачем: для боевых логов _context часто отсутствует, и SCRIPT приходится выводить из изменений устройств.
     // Чтобы device/actuator/consumer попали в тот же trace_id, что и синтетический SCRIPT,
     // сначала пробуем определить запуск скрипта по изменению устройства, и только потом считаем trace_id.
@@ -2121,7 +2139,8 @@ const handleActionSet = (message) => {
         id.includes('/dim/') || 
         id.includes('/rgb/') || 
         id.includes('/group/') ||
-        id.includes('/relay/')
+        id.includes('/relay/') ||
+        id.includes('/ao/')
       ));
 
     if (
@@ -2129,15 +2148,17 @@ const handleActionSet = (message) => {
       payload.executed === undefined &&
       payload.last_execution === undefined &&
       !isTriggerStartEvent &&
-      isEffectLikeDeviceChange
+      isEffectLikeDeviceChange &&
+      hasRealChanges // Зачем: синтетику выводим только если устройство РЕАЛЬНО изменилось
     ) {
       checkAndGenerateScriptEvent(id, msgTimestamp, newState);
     }
 
-    // Зачем: сохраняем исходный timestamp WS-сообщения в контексте,
-    // чтобы “реальные” события (в т.ч. SCRIPT executed) писались с правильным временем,
-    // а не с Date.now(), иначе ломается порядок в цепочках.
-    context.event_timestamp = msgTimestamp;
+    // Зачем: если изменений нет, и это не прямой запуск скрипта или триггера — выходим.
+    // Это экономит CPU, диск и место в OpenSearch.
+    if (!hasRealChanges && payload.executed === undefined && payload.last_execution === undefined && !isTriggerStartEvent) {
+      return;
+    }
 
     const traceIdRaw = generateTraceId(id, context, keyParam, msgTimestamp);
     const traceId = normalizeTraceId(traceIdRaw);
