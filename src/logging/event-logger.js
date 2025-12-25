@@ -579,6 +579,12 @@ const getDeviceRole = (id) => {
   const device = state.get(id);
   if (!device || typeof device !== 'object') return 'device';
   
+  // Таймер (daemon timers): type='timer' + поля time/script/state
+  // Зачем: ACTION_TIMER_START в демоне кладёт таймеру { time, script, state }, но без timer/duration.
+  if (typeof device.type === 'string' && device.type.toLowerCase() === 'timer') {
+    return 'timer';
+  }
+
   // Зачем: в бою (и в init snapshot) скрипт может иметь пустой action[],
   // но по смыслу это всё равно SCRIPT (особенно clock/schedule-скрипты вроде "Ежеминутник").
   if (typeof device.type === 'string' && device.type.toLowerCase() === 'script') {
@@ -595,8 +601,8 @@ const getDeviceRole = (id) => {
     return 'schedule';
   }
   
-  // Таймер: есть timer или duration
-  if (device.timer || device.duration) {
+  // Таймер: есть timer/duration (старые форматы) или time/script (daemon ACTION_TIMER_START)
+  if (device.timer || device.duration || device.time !== undefined || device.script !== undefined) {
     return 'timer';
   }
   
@@ -1856,6 +1862,7 @@ const handleActionSet = (message) => {
                           'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                           'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
                           'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
+                          'time', 'script', // Зачем: timer (ACTION_TIMER_START) хранит установленное время в time и ссылку на script
                           'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                           // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
                           'action', 'schedule', 'clock', 'timer', 'duration',
@@ -3274,6 +3281,7 @@ const connect = () => {
                                     'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                                     'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
                                     'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
+                                    'time', 'script', // Зачем: timer (ACTION_TIMER_START) хранит установленное время в time и ссылку на script
                                     'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                                     // Зачем: поля для резолва допплер-порогов (ACTION_DOPPLER_HANDLE)
                                     'sensorId', 'low', 'high', 'onLowThreshold', 'onHighThreshold', 'onQuiet',
