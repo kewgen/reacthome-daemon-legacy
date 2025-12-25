@@ -219,6 +219,9 @@ const getDeviceFields = (id) => {
     parent: obj.parent !== undefined ? obj.parent : null,
     bind: obj.bind !== undefined ? obj.bind : null, // Зачем: связываем потребителя и канал/актуатор для корректного trace_id
     site: obj.site !== undefined ? obj.site : null,
+    // Таймеры: конфигурация/длительность может храниться в device.timer / device.duration
+    timer: obj.timer !== undefined ? obj.timer : null,
+    duration: obj.duration !== undefined ? obj.duration : null,
     project: obj.project !== undefined ? obj.project : null
   };
 };
@@ -2496,6 +2499,24 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
           param: actuatorStateInfo.param
         };
       }
+    }
+    
+    // Зачем: если это таймер — добавляем конфигурацию таймера в extra (включая установленное время/duration),
+    // чтобы при индексации в OpenSearch было видно, сколько было выставлено.
+    try {
+      const deviceObj = state.get(id);
+      if (deviceObj && (deviceObj.timer !== undefined || deviceObj.duration !== undefined)) {
+        extra.timer = {};
+        if (deviceObj.timer !== undefined) extra.timer.timer = deviceObj.timer;
+        if (deviceObj.duration !== undefined) extra.timer.duration = deviceObj.duration;
+        // Иногда таймеры хранят значение в payload/setpoint или в nested fields — пробуем более глубокий резолв
+        if (deviceObj.payload && typeof deviceObj.payload === 'object') {
+          if (deviceObj.payload.timer !== undefined) extra.timer.timer = deviceObj.payload.timer;
+          if (deviceObj.payload.duration !== undefined) extra.timer.duration = deviceObj.payload.duration;
+        }
+      }
+    } catch (err) {
+      // Не фатальная ошибка — пропускаем
     }
     
     // Зачем: определение, является ли устройство потребителем (алгоритм из src/monitor.js)
