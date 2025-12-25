@@ -222,6 +222,9 @@ const getDeviceFields = (id) => {
     // Таймеры: конфигурация/длительность может храниться в device.timer / device.duration
     timer: obj.timer !== undefined ? obj.timer : null,
     duration: obj.duration !== undefined ? obj.duration : null,
+    // Таймеры демона (ACTION_TIMER_START) кладут установленное время в поле time и ссылку на script
+    time: obj.time !== undefined ? obj.time : null,
+    script: obj.script !== undefined ? obj.script : null,
     project: obj.project !== undefined ? obj.project : null
   };
 };
@@ -1852,6 +1855,7 @@ const handleActionSet = (message) => {
     const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
                           'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                           'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                          'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
                           'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                           // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
                           'action', 'schedule', 'clock', 'timer', 'duration',
@@ -2167,20 +2171,27 @@ const handleActionSet = (message) => {
     const traceId = normalizeTraceId(traceIdRaw);
     context.trace_id = traceId;
 
-    // Зачем: только ручные действия (S4 клики) резервируют trace_id для предотвращения
-    // конфликтов с датчиками присутствия (doppler), которые могут иметь те же скрипты.
-    // Датчики присутствия не должны "отбирать" trace_id у интерактивных действий.
-    if (isTriggerStartEvent && signalSource && signalSource.kind === 'manual') {
-      const gid = (signalSource.channel === 's4') ? signalSource.action?.gesture_id : null;
+    // Зачем: явная связь SOURCE → SCRIPT → targets.
+    // - manual (S4 клики): всегда резервируем для устойчивости жестов и порядка WS сообщений.
+    // - sensor (doppler): резервируем ТОЛЬКО при пересечении порога (low/high/quiet), иначе это шум измерений.
+    // Важно: для sensor используем только matched_trigger_scripts, чтобы не склеивать цепочки по всем кандидатам.
+    if (isTriggerStartEvent && signalSource) {
+      const isManualStart = signalSource.kind === 'manual';
+      const thresholdCross = (signalSource.action && signalSource.action.threshold_cross) ? signalSource.action.threshold_cross : null;
+      const isThresholdSensorStart =
+        signalSource.kind === 'sensor' &&
+        thresholdCross &&
+        typeof thresholdCross.kind === 'string' &&
+        thresholdCross.kind !== 'base' && // Зачем: "base" не означает срабатывание порога
+        signalSource.linked &&
+        Array.isArray(signalSource.linked.matched_trigger_scripts) &&
+        signalSource.linked.matched_trigger_scripts.some((x) => typeof x === 'string' && x);
 
-      const triggerScriptIds = collectTriggerScriptIds({ id, baseId, payload, newState, signalSource });
-
-      propagateTraceIdToTargets({
-        traceId,
-        triggerScriptIds,
-        msgTimestamp,
-        gestureId: gid
-      });
+      if (isManualStart || isThresholdSensorStart) {
+        const gid = (isManualStart && signalSource.channel === 's4') ? signalSource.action?.gesture_id : null;
+        const triggerScriptIds = collectTriggerScriptIds({ id, baseId, payload, newState, signalSource });
+        propagateTraceIdToTargets({ traceId, triggerScriptIds, msgTimestamp, gestureId: gid });
+      }
     }
 
     // Зачем: если это CONSUMER и у него есть bind на канал/актуатор, прокидываем trace_id в канал.
@@ -2501,18 +2512,35 @@ const processEvent = (id, oldState, newState, context, changedPayload = null, ac
       }
     }
     
-    // Зачем: если это таймер — добавляем конфигурацию таймера в extra (включая установленное время/duration),
-    // чтобы при индексации в OpenSearch было видно, сколько было выставлено.
+    // Зачем: если это таймер — добавляем конфигурацию таймера в extra (включая установленное время/time),
+    // чтобы в событии было видно, сколько выставлено, даже если логируем только param=state.
     try {
       const deviceObj = state.get(id);
-      if (deviceObj && (deviceObj.timer !== undefined || deviceObj.duration !== undefined)) {
+      const role = getDeviceRole(id);
+      if (deviceObj && role === 'timer') {
         extra.timer = {};
+        // daemon timer: ACTION_TIMER_START -> { time, script, state:true, timestamp }
+        if (deviceObj.time !== undefined) extra.timer.time = deviceObj.time;
+        if (deviceObj.script !== undefined) extra.timer.script = deviceObj.script;
+
+        // альтернативные форматы (на всякий случай)
         if (deviceObj.timer !== undefined) extra.timer.timer = deviceObj.timer;
         if (deviceObj.duration !== undefined) extra.timer.duration = deviceObj.duration;
-        // Иногда таймеры хранят значение в payload/setpoint или в nested fields — пробуем более глубокий резолв
+
+        // Иногда значение может лежать в payload.*
         if (deviceObj.payload && typeof deviceObj.payload === 'object') {
+          if (deviceObj.payload.time !== undefined) extra.timer.time = deviceObj.payload.time;
           if (deviceObj.payload.timer !== undefined) extra.timer.timer = deviceObj.payload.timer;
           if (deviceObj.payload.duration !== undefined) extra.timer.duration = deviceObj.payload.duration;
+          if (deviceObj.payload.script !== undefined) extra.timer.script = deviceObj.payload.script;
+        }
+
+        // Нормализация: если time строка с числом — добавим parsed ms
+        if (extra.timer.time !== undefined) {
+          const parsed = parseInt(extra.timer.time, 10);
+          if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+            extra.timer.time_ms = parsed;
+          }
         }
       }
     } catch (err) {
@@ -3245,6 +3273,7 @@ const connect = () => {
               const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
                                     'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                                     'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
+                                    'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
                                     'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
                                     // Зачем: поля для резолва допплер-порогов (ACTION_DOPPLER_HANDLE)
                                     'sensorId', 'low', 'high', 'onLowThreshold', 'onHighThreshold', 'onQuiet',
