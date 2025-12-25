@@ -11,7 +11,7 @@
  * @property {string|null} channel - Подвид источника (например, 's4', 'doppler')
  * @property {string|null} description
  * @property {{id: string|null, human: string|null, channel_id: string|null}} device
- * @property {{phase: 'down'|'move'|'up'|'unknown', value: any, gesture_id: string|null, click_kind: 'press'|'click'|'double_click'|'hold'|'dimming'|'unknown', duration_ms: number|null}} action
+ * @property {{phase: 'down'|'move'|'up'|'unknown', value: any, gesture_id: string|null, click_kind: 'press'|'click'|'double_click'|'hold'|'dimming'|'unknown', duration_ms: number|null, thresholds?: {low: number|null, high: number|null}}} action
  * @property {{trigger_scripts: {onClick: string[], onClick2: string[], onHold: string[]}, inferred_from: 'device'|'di'|'none'}} linked
  * @property {{confidence: 'high'|'medium'|'low', reason: string}} meta
  */
@@ -63,6 +63,7 @@ const uniq = (arr) => Array.from(new Set(arr));
 function resolveSignalSourceFromWs(message, deps) {
   const state = deps && deps.state;
   const cache = deps && deps.cache;
+  const oldState = deps && deps.oldState; // Зачем: для порогов допплера важно сравнивать old→new (пересечение), а не только new.
 
   const id = message && typeof message === 'object' ? message.id : null;
   const payload = message && typeof message === 'object' ? message.payload : null;
@@ -74,8 +75,8 @@ function resolveSignalSourceFromWs(message, deps) {
     channel: null,
     description: null,
     device: { id: typeof id === 'string' ? id : null, human: null, channel_id: null },
-    action: { phase: 'unknown', value: null, gesture_id: null, click_kind: 'unknown', duration_ms: null },
-    linked: { trigger_scripts: { onClick: [], onClick2: [], onHold: [] }, inferred_from: 'none' },
+    action: { phase: 'unknown', value: null, gesture_id: null, click_kind: 'unknown', duration_ms: null, thresholds: null },
+    linked: { trigger_scripts: { onClick: [], onClick2: [], onHold: [] }, matched_trigger_scripts: [], inferred_from: 'none' }, // Зачем: разделяем "кандидаты" и "фактически сработавшие", чтобы не склеивать цепочки.
     meta: { confidence: 'low', reason: 'unknown' }
   };
 
@@ -118,6 +119,7 @@ function resolveSignalSourceFromWs(message, deps) {
       gesture_id: null,
       click_kind: "unknown",
       duration_ms: null,
+      thresholds: null,
     };
     base.meta = { confidence: "high", reason: "payload.value + state.onDoppler" };
 
@@ -126,6 +128,53 @@ function resolveSignalSourceFromWs(message, deps) {
       base.linked.trigger_scripts.onClick.push(dopplerScript);
       base.linked.inferred_from = "device";
     }
+
+    // Зачем: если есть инфо о порогах (ACTION_DOPPLER_HANDLE), добавляем их и связанные скрипты.
+    const handle = typeof deps.getDopplerHandle === 'function' ? deps.getDopplerHandle(baseId) : null;
+    if (handle) {
+      const low = handle.low !== undefined ? Number(handle.low) : null;
+      const high = handle.high !== undefined ? Number(handle.high) : null;
+      base.action.thresholds = { low, high };
+      // Зачем: скрипты порогов тоже являются триггерами, которые могут начать цепочку.
+      for (const k of ['onLowThreshold', 'onHighThreshold', 'onQuiet']) {
+        const sid = handle[k];
+        if (typeof sid === 'string' && sid) {
+          base.linked.trigger_scripts.onClick.push(sid);
+        }
+      }
+      base.linked.trigger_scripts.onClick = uniq(base.linked.trigger_scripts.onClick);
+
+      // Зачем: определяем, какой именно триггер СРАБОТАЛ, по пересечению порогов (old→new),
+      // а не по "списку привязок" (иначе trace_id размазывается на все скрипты и цепочки ломаются).
+      const isNum = (x) => typeof x === 'number' && Number.isFinite(x);
+      const prev = (oldState && isNum(oldState.value)) ? oldState.value : (isNum(stateBase.value) ? stateBase.value : null);
+      const next = isNum(payload.value) ? payload.value : null;
+
+      const crossedHigh = isNum(prev) && isNum(next) && isNum(high) && prev <= high && next > high;
+      const crossedLow = isNum(prev) && isNum(next) && isNum(low) && prev >= low && next < low;
+      const crossedQuiet = isNum(prev) && isNum(next) && prev !== 0 && next === 0;
+
+      let matched = [];
+      let crossKind = null;
+      if (crossedHigh && typeof handle.onHighThreshold === 'string' && handle.onHighThreshold) {
+        matched = [handle.onHighThreshold];
+        crossKind = 'high';
+      } else if (crossedLow && typeof handle.onLowThreshold === 'string' && handle.onLowThreshold) {
+        matched = [handle.onLowThreshold];
+        crossKind = 'low';
+      } else if (crossedQuiet && typeof handle.onQuiet === 'string' && handle.onQuiet) {
+        matched = [handle.onQuiet];
+        crossKind = 'quiet';
+      } else if (typeof dopplerScript === 'string' && dopplerScript) {
+        matched = [dopplerScript];
+        crossKind = 'base';
+      }
+
+      base.linked.matched_trigger_scripts = uniq(matched);
+      // Зачем: делаем диагностику понятной в логах/отчётах, не трогая WS.
+      base.action.threshold_cross = { kind: crossKind, prev, next, low, high };
+    }
+
     return base;
   }
 

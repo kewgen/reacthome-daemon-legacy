@@ -41,7 +41,7 @@ const CONSUMER_TYPES = [
   'socket_220', 'valve_heating', 'valve_water',
   'warm_floor', 'AC', 'FAN', 'fan', 'BOILER', 'PUMP',
   'curtains', 'curtain', 'blind', 'blinds', 'roller',
-  'multiroom',
+  'multiroom', 'NOVA'
 ];
 
 
@@ -144,7 +144,8 @@ const normalizeTraceId = (value) => {
 const isBranchScriptByTitle = (scriptId) => {
   const s = state.get(scriptId);
   const title = typeof s?.title === 'string' ? s.title.trim().toLowerCase() : '';
-  return title.endsWith(' on') || title.endsWith(' off');
+  return title.endsWith(' on') || title.endsWith(' off') ||
+         title.endsWith(' open') || title.endsWith(' close') || title.endsWith('stop');
 };
 
 // 6. Обратный индекс deviceId -> Set<scriptId> для быстрого поиска скриптов
@@ -159,6 +160,8 @@ const ACTUATOR_CACHE_TTL_MS = 86400000; // 24 часа - actuatorStateCache и c
 
 // Зачем: для S4/DI нужно склеить down/move/up в один "жест", чтобы удержание/диммирование не распадалось на десятки trace_id.
 const signalSourceCache = new Map(); // key: base device id (например, "90:..") -> gesture state
+const dopplerHandlesCache = new Map(); // key: sensor device id -> handle state (ACTION_DOPPLER_HANDLE)
+const reverseBindingCache = new Map(); // key: targetId (путь к каналу "90:../do/1") -> consumerId (UUID)
 const gestureTraceCache = new Map(); // key: gesture_id -> trace_id
 // Зачем: любой жест (gesture_id) с высокой вероятностью — начало причинной цепочки.
 // Резервируем trace_id на всех транзитивных скриптах жеста, чтобы поздние SCRIPT executed не "украли" трейс.
@@ -289,7 +292,14 @@ const enrichChannelEvent = (id, event) => {
   }
   
   // Добавляем объект endDevice (через bind)
-  const endDeviceId = channel.bind;
+  let endDeviceId = channel.bind;
+  
+  // Фолбэк: обратная привязка (логика из src/monitor.js)
+  // Зачем: некоторые потребители (например, шторы) имеют bind, указывающий на канал актуатора
+  if (!endDeviceId) {
+    endDeviceId = reverseBindingCache.get(id);
+  }
+  
   if (endDeviceId && typeof endDeviceId === 'string') {
     const endDevice = state.get(endDeviceId);
     if (endDevice) {
@@ -321,10 +331,38 @@ const enrichChannelEvent = (id, event) => {
   return event;
 };
 
-// Определение класса актуатора (лампа, вентилятор, кондей, тёплый пол)
+// Определение класса актуатора (лампа, вентилятор, кондей, тёплый пол, шторы)
 const getActuatorClass = (id, newState) => {
   if (!newState || typeof newState !== 'object') return null;
   
+  // 1. Пытаемся определить по типу устройства из state (более надёжно)
+  let type = null;
+  const device = state.get(id);
+  
+  if (device) {
+    type = device.type;
+    // Если это канал, смотрим на привязанное устройство
+    if (isChannelId(id)) {
+      const endDeviceId = device.bind || reverseBindingCache.get(id);
+      if (endDeviceId) {
+        const endDevice = state.get(endDeviceId);
+        if (endDevice) type = endDevice.type;
+      }
+    }
+  }
+  
+  if (!type) type = getDeviceTypeWithFallback(id);
+  
+  if (type) {
+    const t = typeof type === 'string' ? type.toLowerCase() : type;
+    if (['curtains', 'curtain', 'blind', 'blinds', 'roller'].includes(t)) return 'curtain';
+    if (['light_220', 'light_led', 'light_rgb'].includes(t)) return 'light';
+    if (t === 'ac') return 'ac';
+    if (t === 'fan') return 'fan';
+    if (t === 'warm_floor') return 'warm_floor';
+  }
+
+  // 2. Фолбэк на параметры в newState (существующая логика)
   // Лампа: есть value или brightness
   if ('value' in newState || 'brightness' in newState || 'r' in newState || 'g' in newState || 'b' in newState) {
     return 'light';
@@ -377,6 +415,11 @@ const isActuatorOn = (actuatorClass, deviceState) => {
     case 'warm_floor':
       // Тёплый пол включен, если setpoint > 0 или value > 0
       return (deviceState.setpoint > 0) || (deviceState.value > 0);
+    case 'curtain':
+      // Шторы: активны, если значение > 0 (открыты или в процессе)
+      // Зачем: для штор "on" означает любое положение кроме полностью закрытого (или факт движения)
+      return (deviceState.value !== undefined && deviceState.value > 0) || 
+             (deviceState.state && deviceState.state !== 'stop');
     default:
       return false;
   }
@@ -513,6 +556,18 @@ const updateChannelStateCache = (channelId, oldValue, newValue, endDeviceId) => 
 };
 
 // Определение типа устройства по данным из БД
+// Построение индекса обратных привязок для быстрого резолва CONSUMER штор и других устройств
+// Зачем: логика из src/monitor.js — потребители могут указывать на канал актуатора через bind
+const buildReverseBindingIndex = () => {
+  reverseBindingCache.clear();
+  const stateData = state.state();
+  for (const [id, device] of Object.entries(stateData)) {
+    if (device && device.bind && typeof device.bind === 'string' && device.bind.includes('/')) {
+      reverseBindingCache.set(device.bind, id);
+    }
+  }
+};
+
 // Зачем: для определения триггеров событий без _context от демона
 const getDeviceRole = (id) => {
   const device = state.get(id);
@@ -614,21 +669,32 @@ const collectTriggerScriptIds = ({ id, baseId, payload, newState, signalSource }
   const triggerScriptIds = [];
   const src = (newState && typeof newState === 'object') ? newState : payload;
 
-  const s4Triggers = (signalSource && signalSource.kind === 'manual' && signalSource.channel === 's4' && signalSource.linked && signalSource.linked.trigger_scripts)
+  // Зачем: для допплера (и других "мульти‑триггеров") в linked.trigger_scripts лежат КАНДИДАТЫ (привязки),
+  // но для трассировки нужен только реально сработавший триггер (matched), иначе цепочки склеиваются.
+  const matched = (signalSource && signalSource.linked && Array.isArray(signalSource.linked.matched_trigger_scripts))
+    ? signalSource.linked.matched_trigger_scripts
+    : null;
+  if (matched && matched.some((x) => typeof x === 'string' && x)) {
+    return Array.from(new Set(matched.filter((x) => typeof x === 'string' && x)));
+  }
+
+  const linkedTriggers = (signalSource && signalSource.linked && signalSource.linked.trigger_scripts)
     ? signalSource.linked.trigger_scripts
     : null;
 
-  if (s4Triggers) {
-    for (const x of (Array.isArray(s4Triggers.onClick) ? s4Triggers.onClick : [])) triggerScriptIds.push(x);
-    for (const x of (Array.isArray(s4Triggers.onClick2) ? s4Triggers.onClick2 : [])) triggerScriptIds.push(x);
-    for (const x of (Array.isArray(s4Triggers.onHold) ? s4Triggers.onHold : [])) triggerScriptIds.push(x);
+  if (linkedTriggers) {
+    for (const x of (Array.isArray(linkedTriggers.onClick) ? linkedTriggers.onClick : [])) triggerScriptIds.push(x);
+    for (const x of (Array.isArray(linkedTriggers.onClick2) ? linkedTriggers.onClick2 : [])) triggerScriptIds.push(x);
+    for (const x of (Array.isArray(linkedTriggers.onHold) ? linkedTriggers.onHold : [])) triggerScriptIds.push(x);
   }
 
   // Фолбэк: триггеры могут лежать в объекте устройства/DI.
-  for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff']) {
+  for (const k of ['onClick', 'onClick2', 'onHold', 'onOn', 'onOff', 'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose']) {
     const v = src ? src[k] : null;
     if (Array.isArray(v)) {
       for (const x of v) if (typeof x === 'string' && x) triggerScriptIds.push(x);
+    } else if (typeof v === 'string' && v) {
+      triggerScriptIds.push(v);
     }
   }
 
@@ -656,37 +722,60 @@ const collectTriggerScriptIds = ({ id, baseId, payload, newState, signalSource }
 };
 
 /**
- * Резервирует trace_id на транзитивных скриптах, связанных с жестом.
- * Зачем: если позже придёт SCRIPT executed (из nested script), он обязан унаследовать trace_id жеста.
+ * Прокидывает trace_id на все скрипты и устройства, которые могут быть запущены этим событием.
+ * Зачем: "прямая и явная связь" — гарантирует связность даже при перестановке сообщений в WebSocket.
+ * Если передан gestureId (для S4), также резервирует скрипты в gesture-индексе.
  */
-const reserveGestureScripts = ({ gestureId, traceId, msgTimestamp, triggerScriptIds }) => {
-  if (!gestureId || !traceId) return;
+const propagateTraceIdToTargets = ({ traceId, triggerScriptIds, msgTimestamp, gestureId = null }) => {
+  if (!traceId || !Array.isArray(triggerScriptIds) || triggerScriptIds.length === 0) return;
   const normalizedTraceId = normalizeTraceId(traceId);
   if (!normalizedTraceId) return;
 
-  const prev = gestureToScriptsCache.get(gestureId);
-  const scripts = prev && prev.scripts instanceof Set ? new Set(prev.scripts) : new Set();
+  const allTargetsSet = new Set();
+  const scriptsSet = new Set();
 
-  for (const rootScriptId of triggerScriptIds || []) {
+  for (const rootScriptId of triggerScriptIds) {
     if (!rootScriptId || typeof rootScriptId !== 'string') continue;
-    scripts.add(rootScriptId);
-    const targets = getScriptTargetDevices(rootScriptId);
-    for (const tid of targets) {
-      if (getDeviceRole(tid) === 'script') scripts.add(tid);
+    scriptsSet.add(rootScriptId);
+    allTargetsSet.add(rootScriptId);
+    
+    // Получаем ВСЕ транзитивные цели (и скрипты, и устройства)
+    const transitiveTargets = getScriptTargetDevices(rootScriptId);
+    for (const tid of transitiveTargets) {
+      if (getDeviceRole(tid) === 'script') {
+        scriptsSet.add(tid);
+      }
+      allTargetsSet.add(tid);
     }
   }
 
-  gestureToScriptsCache.set(gestureId, {
-    trace_id: normalizedTraceId,
-    scripts,
-    created_ts: prev?.created_ts || msgTimestamp,
-    last_ts: msgTimestamp,
-  });
+  // Если есть жест — сохраняем в индекс резерваций (для наследования в SCRIPT executed)
+  if (gestureId) {
+    const prev = gestureToScriptsCache.get(gestureId);
+    const combinedScripts = (prev && prev.scripts instanceof Set) 
+      ? new Set([...prev.scripts, ...scriptsSet]) 
+      : scriptsSet;
+    
+    gestureToScriptsCache.set(gestureId, {
+      trace_id: normalizedTraceId,
+      scripts: combinedScripts,
+      created_ts: prev?.created_ts || msgTimestamp,
+      last_ts: msgTimestamp,
+    });
 
-  for (const sid of scripts) {
-    scriptGestureIndex.set(sid, { gesture_id: gestureId, trace_id: normalizedTraceId, last_ts: msgTimestamp });
-    traceIdCache.set(sid, normalizedTraceId);
-    recentEventsCache.set(sid, { timestamp: msgTimestamp, trace_id: normalizedTraceId, type: 'script' });
+    for (const sid of scriptsSet) { // Индексируем только новые скрипты
+      scriptGestureIndex.set(sid, { gesture_id: gestureId, trace_id: normalizedTraceId, last_ts: msgTimestamp });
+    }
+  }
+
+  // Резервируем trace_id для всех потенциально затрагиваемых объектов
+  for (const tid of allTargetsSet) {
+    traceIdCache.set(tid, normalizedTraceId);
+    // Обновляем recentEventsCache, чтобы наследники (например, шторы) увидели связь
+    const prev = recentEventsCache.get(tid);
+    if (!prev || (typeof prev.timestamp === 'number' && prev.timestamp <= msgTimestamp)) {
+      recentEventsCache.set(tid, { timestamp: msgTimestamp, trace_id: normalizedTraceId, type: 'script' });
+    }
   }
 };
 
@@ -1161,7 +1250,9 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
       const actionType = determineScriptActionType(scriptId, scriptState);
       const title = typeof scriptState?.title === 'string' ? scriptState.title.trim().toLowerCase() : '';
       const isToggleBranch = toggleBranchesAll.has(scriptId);
-      const isBranchLike = isToggleBranch || title.endsWith(' on') || title.endsWith(' off');
+      const isBranchLike = isToggleBranch || 
+        title.endsWith(' on') || title.endsWith(' off') ||
+        title.endsWith(' open') || title.endsWith(' close') || title.endsWith('stop');
 
       // Зачем: ветки toggle (on/off) синтезируем строго только по consumer.value.
       if (isToggleBranch) {
@@ -1169,23 +1260,25 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
         if (!toggleBranchesWanted.has(scriptId)) continue;
       }
 
-      // Зачем: ветку on/off можно выбирать только когда мы знаем итоговое состояние consumer.value.
+      // Зачем: ветку on/off/open/close можно выбирать только когда мы знаем итоговое состояние consumer.value.
       // Если consumerValue не boolean (например, событие пришло от ACTUATOR с value=255),
-      // то синтезировать ACTION_ON/ACTION_OFF нельзя — иначе появятся обе ветки в одном trace (шум).
-      if (isBranchLike && (actionType === 'ACTION_ON' || actionType === 'ACTION_OFF') && typeof consumerValue !== 'boolean') {
+      // то синтезировать ACTION_ON/ACTION_OFF/... нельзя — иначе появятся обе ветки в одном trace (шум).
+      const isBooleanAction = actionType === 'ACTION_ON' || actionType === 'ACTION_OFF' || 
+                             actionType === 'ACTION_OPEN' || actionType === 'ACTION_CLOSE' || 
+                             actionType === 'ACTION_STOP';
+
+      if (isBranchLike && isBooleanAction && typeof consumerValue !== 'boolean') {
         continue;
       }
-      // Доп. страховка: если action_type не определился, но по title видно on/off — тоже требуем boolean.
+      // Доп. страховка: если action_type не определился, но по title видно branch-like — тоже требуем boolean.
       if (actionType === 'ACTION_UNKNOWN' && typeof scriptState?.title === 'string' && typeof consumerValue !== 'boolean') {
         if (isBranchLike) continue;
       }
 
-      // Зачем: строгий выбор ветки делаем только для branch-like скриптов (title "... on/off").
-      // Для прочих скриптов (например "toggle every 1m ...") actionType может быть ACTION_ON,
-      // но скрипт реально содержит и ON и OFF — фильтровать по consumerValue нельзя, иначе OFF-трейсы теряют SCRIPT.
+      // Зачем: строгий выбор ветки делаем только для branch-like скриптов (title "... on/off/open/close/stop").
       if (isBranchLike && typeof consumerValue === 'boolean') {
-        if (actionType === 'ACTION_ON' && consumerValue !== true) continue;
-        if (actionType === 'ACTION_OFF' && consumerValue !== false) continue;
+        if ((actionType === 'ACTION_ON' || actionType === 'ACTION_OPEN') && consumerValue !== true) continue;
+        if ((actionType === 'ACTION_OFF' || actionType === 'ACTION_CLOSE' || actionType === 'ACTION_STOP') && consumerValue !== false) continue;
       }
 
       if (currentTrace) {
@@ -1801,6 +1894,21 @@ const handleActionSet = (message) => {
     // Зачем: получаем информацию о времени включения и длительности работы для обогащения событий
     const actuatorStateInfo = updateActuatorStateCache(id, oldState, newState);
     
+    // Зачем: обновляем индекс обратных привязок, если изменился bind на потребителе
+    if (newState && newState.bind !== undefined && oldState?.bind !== newState.bind) {
+      if (oldState?.bind && typeof oldState.bind === 'string' && oldState.bind.includes('/')) {
+        reverseBindingCache.delete(oldState.bind);
+      }
+      if (newState.bind && typeof newState.bind === 'string' && newState.bind.includes('/')) {
+        reverseBindingCache.set(newState.bind, id);
+      }
+    }
+    
+    // Зачем: если это обновление конфига порогов допплера, обновляем кэш для резолва источников
+    if (newState && newState.type === 'ACTION_DOPPLER_HANDLE' && newState.payload && newState.payload.id) {
+      dopplerHandlesCache.set(newState.payload.id, newState.payload);
+    }
+    
     // Получаем контекст из _context или создаём пустой
     const context = _context || {
       type: 'unknown',
@@ -1835,7 +1943,12 @@ const handleActionSet = (message) => {
         return deviceState.get(sid);
       }
     };
-    const signalSource = resolveSignalSourceFromWs(message, { state: stateForSource, cache: signalSourceCache });
+    const signalSource = resolveSignalSourceFromWs(message, { 
+      state: stateForSource, 
+      cache: signalSourceCache,
+      getDopplerHandle: (sensorId) => dopplerHandlesCache.get(sensorId),
+      oldState, // Зачем: для порогов допплера нужно оценивать пересечение old→new (иначе неверный выбор триггера).
+    });
     context.signal_source = signalSource;
 
     // Зачем: триггер‑устройства (кнопки/датчики), запускающие скрипты через onDoppler/onTrue/...,
@@ -1866,6 +1979,10 @@ const handleActionSet = (message) => {
       })();
 
       if (hasStringTrigger || hasArrayTrigger) return true;
+
+      // Зачем: допплеры могут иметь триггеры не в себе, а в отдельном ACTION_DOPPLER_HANDLE
+      const handle = dopplerHandlesCache.get(baseId);
+      if (handle && (handle.onLowThreshold || handle.onHighThreshold || handle.onQuiet)) return true;
 
       // Зачем: в бою событие клика может приходить по базовому устройству (MAC),
       // а сами триггеры на скрипты лежат в DI канале (например, `${id}/di/1`).
@@ -1968,6 +2085,20 @@ const handleActionSet = (message) => {
       if (signalSource.action.phase === 'up') {
         gestureTraceCache.delete(gid);
       }
+
+      // 3) Фолбэк для технических value-событий S4 без gesture_id:
+      // если недавно (<=800мс) по этому baseId уже был trace_id, наследуем его,
+      // чтобы не дробить цепочку на "value" и последующий click/hold.
+      if (!context.trace_id) {
+        const recentByBase = recentEventsCache.get(baseId);
+        if (recentByBase && recentByBase.trace_id && typeof recentByBase.timestamp === 'number') {
+          const age = msgTimestamp - recentByBase.timestamp;
+          if (age >= 0 && age <= 800) {
+            context.trace_id = normalizeTraceId(recentByBase.trace_id);
+            logDebug(`🔗 S4 fallback: наследуем trace_id ${context.trace_id.slice(0,8)} для ${id.slice(0,8)} (age ${age}ms)`);
+          }
+        }
+      }
     } else if (isTriggerStartEvent && !context.trace_id) {
       context.trace_id = uuidv4();
     }
@@ -1979,10 +2110,20 @@ const handleActionSet = (message) => {
     // Важно: НЕ выводим синтетический SCRIPT из SOURCE (S4/DI) — иначе получаем “SCRIPT executed без CONSUMER” (шум),
     // т.к. источник сам по себе не является эффектом выполнения сценария.
     const roleForSyntheticInference = getDeviceRole(id);
+    const actuatorClass = getActuatorClass(id, newState);
+    const deviceType = getDeviceTypeWithFallback(id);
     const isEffectLikeDeviceChange =
-      roleForSyntheticInference === 'consumer' ||
-      roleForSyntheticInference === 'actuator' ||
-      (typeof id === 'string' && (id.includes('/do/') || id.includes('/dim/') || id.includes('/rgb/')));
+      isConsumerDevice(deviceType) ||
+      !!actuatorClass ||
+      roleForSyntheticInference === 'group' ||
+      (typeof id === 'string' && (
+        id.includes('/do/') || 
+        id.includes('/dim/') || 
+        id.includes('/rgb/') || 
+        id.includes('/group/') ||
+        id.includes('/relay/')
+      ));
+
     if (
       SYNTHETIC_SCRIPT_EVENTS_ENABLED &&
       payload.executed === undefined &&
@@ -2002,43 +2143,20 @@ const handleActionSet = (message) => {
     const traceId = normalizeTraceId(traceIdRaw);
     context.trace_id = traceId;
 
-    // Зачем: любой gesture_id (S4) с высокой вероятностью — начало причинной цепочки.
-    // Резервируем trace_id на транзитивных scriptId, чтобы поздние SCRIPT executed не открывали новый trace.
-    if (signalSource && signalSource.kind === 'manual' && signalSource.action && signalSource.action.gesture_id && traceId) {
-      const gid = signalSource.action.gesture_id;
-      const has = gestureToScriptsCache.get(gid);
-      const needRoots = (signalSource.action.phase === 'down') || !has;
-      const rootScripts = needRoots ? collectTriggerScriptIds({ id, baseId, payload, newState, signalSource }) : [];
-      reserveGestureScripts({ gestureId: gid, traceId, msgTimestamp, triggerScriptIds: rootScripts });
-    }
+    // Зачем: только ручные действия (S4 клики) резервируют trace_id для предотвращения
+    // конфликтов с датчиками присутствия (doppler), которые могут иметь те же скрипты.
+    // Датчики присутствия не должны "отбирать" trace_id у интерактивных действий.
+    if (isTriggerStartEvent && signalSource && signalSource.kind === 'manual') {
+      const gid = (signalSource.channel === 's4') ? signalSource.action?.gesture_id : null;
 
-    // Зачем: SOURCE → SCRIPT → (targets...) — заранее прокидываем trace_id в скрипты, которые запускает устройство.
-    // Это снижает зависимость от порядка прихода WS сообщений и окна RECENT_EVENT_WINDOW_MS.
-    if (isTriggerStartEvent) {
-      const uniqueTriggerScriptIds = collectTriggerScriptIds({ id, baseId, payload, newState, signalSource });
-      for (const scriptId of uniqueTriggerScriptIds) {
-        traceIdCache.set(scriptId, traceId);
-        recentEventsCache.set(scriptId, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
-        const targets = getScriptTargetDevices(scriptId);
-        for (const tid of targets) {
-          // Зачем: script-graph reservation.
-          // Раньше мы пропускали вложенные скрипты, из-за чего их executed мог стартовать новый trace_id
-          // и “утащить” конечные устройства (пример: S4 hold → nested script → Эл.конвектор/Лоджия).
-          //
-          // Безопасность: это только резервирование trace_id (кэш), а не генерация событий.
-          // Выбор ветки on/off для синтетики делается строго по consumer.value (см. checkAndGenerateScriptEvent),
-          // поэтому отметка обеих веток trace_id не приводит к "лишним" SCRIPT executed.
-          //
-          // Доп. защита: ветки on/off распознаём по title и помечаем, но НЕ используем как основание для генерации.
-          if (getDeviceRole(tid) === 'script' && isBranchScriptByTitle(tid)) {
-            traceIdCache.set(tid, traceId);
-            recentEventsCache.set(tid, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
-            continue;
-          }
-          traceIdCache.set(tid, traceId);
-          recentEventsCache.set(tid, { timestamp: msgTimestamp, trace_id: traceId, type: 'script' });
-        }
-      }
+      const triggerScriptIds = collectTriggerScriptIds({ id, baseId, payload, newState, signalSource });
+
+      propagateTraceIdToTargets({
+        traceId,
+        triggerScriptIds,
+        msgTimestamp,
+        gestureId: gid
+      });
     }
 
     // Зачем: если это CONSUMER и у него есть bind на канал/актуатор, прокидываем trace_id в канал.
@@ -2930,10 +3048,19 @@ const initStateFromWebSocket = (stateData) => {
     // Зачем: инициализируем глобальный state всеми данными
     state.init(init);
     
-    log(`State инициализирован: ${stateData.size} записей (sites: ${siteCount}, projects: ${projectCount})`);
+    // Зачем: строим индекс порогов допплеров для быстрого резолва источников
+    dopplerHandlesCache.clear();
+    for (const [sid, sval] of stateData.entries()) {
+      if (sval && sval.type === 'ACTION_DOPPLER_HANDLE' && sval.payload && sval.payload.id) {
+        dopplerHandlesCache.set(sval.payload.id, sval.payload);
+      }
+    }
     
-    // Зачем: строим обратный индекс device -> scripts после инициализации state
+    log(`State инициализирован: ${stateData.size} записей (sites: ${siteCount}, projects: ${projectCount}, dopplerHandles: ${dopplerHandlesCache.size})`);
+    
+    // Зачем: строим индексы после инициализации state
     buildDeviceToScriptsIndex();
+    buildReverseBindingIndex();
   } catch (error) {
     logError('Ошибка инициализации state:', error.message, error.stack);
     throw error;
@@ -3072,6 +3199,8 @@ const connect = () => {
                                     'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
                                     'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
                                     'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
+                                    // Зачем: поля для резолва допплер-порогов (ACTION_DOPPLER_HANDLE)
+                                    'sensorId', 'low', 'high', 'onLowThreshold', 'onHighThreshold', 'onQuiet',
                                     // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
                                     'action', 'schedule', 'clock', 'timer', 'duration',
                                     // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
