@@ -11,6 +11,7 @@
 
 const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
+const fs = require('fs'); // Зачем: файловые логи (events/ws) и служебные дампы для диагностики
 const path = require('path');
 // Зачем: корректируем пути импортов после перемещения файла в src/logging
 const state = require('../controllers/state');
@@ -146,6 +147,83 @@ const isBranchScriptByTitle = (scriptId) => {
   const title = typeof s?.title === 'string' ? s.title.trim().toLowerCase() : '';
   return title.endsWith(' on') || title.endsWith(' off') ||
          title.endsWith(' open') || title.endsWith(' close') || title.endsWith('stop');
+};
+
+/**
+ * Получение задержки (delay) для конкретного целевого устройства в скрипте.
+ * Зачем: позволяет вычислить реальное время старта скрипта относительно изменения устройства.
+ */
+const getScriptActionDelayForDevice = (scriptId, deviceId) => {
+  try {
+    const script = state.get(scriptId);
+    if (!script || typeof script !== 'object') return 0;
+    if (!Array.isArray(script.action)) return 0;
+    
+    for (const actionId of script.action) {
+      const actionObj = state.get(actionId);
+      if (!actionObj || typeof actionObj !== 'object') continue;
+      
+      // Зачем: delay/target могут лежать на разных уровнях payload (в т.ч. payload.payload.*).
+      const targetCandidates = [
+        actionObj.id,
+        actionObj.payload?.id,
+        actionObj.payload?.target,
+        actionObj.payload?.ref,
+        actionObj.payload?.payload?.id,
+        actionObj.payload?.payload?.target,
+        actionObj.payload?.payload?.ref,
+        actionObj.payload?.payload?.channel_id,
+      ].filter((v) => typeof v === 'string' && v.length > 0);
+      const targetId = targetCandidates[0] || null;
+
+      const delayCandidatesRaw = [
+        actionObj.delay,
+        actionObj.payload?.delay,
+        actionObj.payload?.payload?.delay,
+        actionObj.delay_ms,
+        actionObj.delayMs,
+        actionObj.payload?.delay_ms,
+        actionObj.payload?.delayMs,
+        actionObj.payload?.payload?.delay_ms,
+        actionObj.payload?.payload?.delayMs,
+        actionObj.timeout,
+        actionObj.payload?.timeout,
+        actionObj.payload?.payload?.timeout,
+        actionObj.wait,
+        actionObj.payload?.wait,
+        actionObj.payload?.payload?.wait,
+        // Иногда delay лежит не на actionObj напрямую, а в вложенной ссылке на script/meta
+        actionObj.script?.delay,
+        actionObj.script?.delay_ms,
+        actionObj.script?.delayMs,
+        actionObj.script?.payload?.delay,
+        actionObj.script?.payload?.delay_ms,
+        actionObj.script?.payload?.delayMs,
+        actionObj.script?.payload?.payload?.delay,
+        actionObj.script?.payload?.payload?.delay_ms,
+        actionObj.script?.payload?.payload?.delayMs,
+        // Фоллбек на сам script (если actionObj является thin-wrapper без delay)
+        script.delay,
+        script.delay_ms,
+        script.delayMs,
+        script.payload?.delay,
+        script.payload?.delay_ms,
+        script.payload?.delayMs,
+      ];
+      const delayCandidates = delayCandidatesRaw
+        .map((v) => (typeof v === 'number' ? v : (typeof v === 'string' && v.trim() ? Number(v) : null)))
+        .filter((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+      const delayMs = delayCandidates[0] ?? 0;
+
+      const matchesDevice = targetCandidates.includes(deviceId);
+      if (matchesDevice) {
+        return delayMs;
+      }
+    }
+  } catch (e) {
+    // В случае ошибки возвращаем 0
+  }
+  return 0;
 };
 
 // 6. Обратный индекс deviceId -> Set<scriptId> для быстрого поиска скриптов
@@ -875,6 +953,16 @@ const registerScriptExecution = (scriptId, timestamp, traceId, deviceId = null, 
   const scriptState = state.get(scriptId);
   const isScheduler = isSchedulerLikeScript(scriptId, scriptState);
 
+  // Зачем: при синтетическом выводе "SCRIPT executed" из device-change, сам device-change должен попасть в этот trace_id,
+  // иначе второй проход (pass=1) не сможет "подхватить" вложенные скрипты (например, toggle every 1m увлажнение).
+  if (isSynthetic && deviceId) {
+    traceIdCache.set(deviceId, normalizedTraceId);
+    const prev = recentEventsCache.get(deviceId);
+    if (!prev || (typeof prev.timestamp === 'number' && prev.timestamp <= timestamp)) {
+      recentEventsCache.set(deviceId, { timestamp, trace_id: normalizedTraceId, type: 'script' });
+    }
+  }
+
   // 1. Бронируем trace_id для этого тика демона (если это планировщик)
   if (isScheduler && typeof timestamp === 'number' && !schedulerTickTraceCache.has(timestamp)) {
     schedulerTickTraceCache.set(timestamp, { timestamp, trace_id: normalizedTraceId });
@@ -936,11 +1024,10 @@ const registerScriptExecution = (scriptId, timestamp, traceId, deviceId = null, 
     // или позже. Для корректной причинной сортировки ставим synthetic.timestamp немного раньше первого change.
     // Важно: в кэшах оставляем исходный timestamp изменения устройства (timestamp),
     // а сдвиг применяем только к полю timestamp у синтетического события.
-    // TODO: Временно обнулено для тестов. Вернуть Math.max(0, timestamp - 1) для корректной сортировки SCRIPT -> CONSUMER
     const syntheticTs =
       typeof syntheticEventTimestamp === 'number'
         ? syntheticEventTimestamp
-        : (typeof timestamp === 'number' ? Math.max(0, timestamp - 0) : Date.now());
+        : (typeof timestamp === 'number' ? Math.max(0, timestamp - 1) : Date.now());
     const shiftMs =
       (typeof timestamp === 'number' && typeof syntheticTs === 'number')
         ? Math.max(0, timestamp - syntheticTs)
@@ -1123,6 +1210,10 @@ const handleContinuingScriptExecution = (scriptId, deviceId, cached) => {
 const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
   const scripts = findScriptsContainingDevice(deviceId);
   if (scripts.length === 0) return;
+  const isHumidTraceDevice =
+    deviceId === 'e96b1720-5088-4030-883f-8ac389f2480a' || // SOCKET_220 Увлажнение
+    deviceId === '68:27:19:e4:2a:87/dim/3' || // Dim6 / dim/3
+    deviceId === '769b2a05-971b-4a0c-93d2-19a0a839d0a8'; // CLOCK Увлажнение on
   // Фолбэк: если обратный индекс пуст (не построен), попробуем найти скрипты сканированием state.
   if (scripts.length === 0) {
     try {
@@ -1242,7 +1333,9 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
     }
 
     // Если trace уже есть, но мы НЕ смогли однозначно выделить “наши” скрипты, синтетику не запускаем (шум).
-    if (currentTrace && allowedScripts.size === 0) return;
+    if (currentTrace && allowedScripts.size === 0) {
+      return;
+    }
 
     // Зачем: в цепочках “кнопка → toggle → ветка → устройство” важен причинный порядок.
     // Для детерминизма и корректной сортировки по timestamp обрабатываем в порядке:
@@ -1331,11 +1424,17 @@ const checkAndGenerateScriptEvent = (deviceId, timestamp, newState = null) => {
 
     // 2) Затем генерируем новые executed с небольшими смещениями “назад”:
     // Toggle будет чуть раньше ветки, ветка — чуть раньше устройства.
-    // TODO: Временно обнулено для тестов. Вернуть timestamp - orderOffset
+    // Зачем: учитываем delay действия в скрипте, чтобы восстановить реальное время старта.
     for (let i = 0; i < newOnes.length; i++) {
       const { scriptId } = newOnes[i];
-      const orderOffset = newOnes.length - i; // 1..N
-      const syntheticEventTs = typeof timestamp === 'number' ? Math.max(0, timestamp - 0) : null;
+      const orderOffset = newOnes.length - i; // 1..N (для сохранения порядка при одинаковых delay)
+      
+      // Вычисляем задержку именно для этого устройства в скрипте
+      const scriptDelay = getScriptActionDelayForDevice(scriptId, deviceId);
+      
+      // Смещаем timestamp назад на delay + микро-смещение для сортировки
+      const totalShift = scriptDelay + orderOffset;
+      const syntheticEventTs = typeof timestamp === 'number' ? Math.max(0, timestamp - totalShift) : null;
 
       const trace_id = generateTraceId(scriptId, { type: 'script' }, 'executed', timestamp);
       registerScriptExecution(scriptId, timestamp, trace_id, deviceId, true, syntheticEventTs);
@@ -1854,43 +1953,11 @@ const handleActionSet = (message) => {
     // Получаем старое состояние
     const oldState = deviceState.get(id) || {};
     
-    // Обновляем состояние, но храним только необходимые поля для экономии памяти
-    // Зачем: храним только поля, используемые для сравнения, а не весь объект состояния
-    const essentialFields = {};
-    // Копируем только нужные поля из oldState
-    const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
-                          'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
-                          'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
-                          'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
-                          'time', 'script', // Зачем: timer (ACTION_TIMER_START) хранит установленное время в time и ссылку на script
-                          'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
-                          // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
-                          'action', 'schedule', 'clock', 'timer', 'duration',
-                          // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
-                          'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
-                          // Зачем: реальные DI/кнопки часто хранят триггеры как массивы скриптов (onClick/onHold/...),
-                          // а live ACTION_SET по value приходит без этих полей — их надо сохранить из init snapshot.
-                          'onClick', 'onClick2', 'onHold', 'onOn', 'onOff',
-                          // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
-                          'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
-    for (const field of fieldsToKeep) {
-      if (oldState[field] !== undefined) {
-        essentialFields[field] = oldState[field];
-      }
-    }
-    // Добавляем новые поля из payload
-    for (const field of fieldsToKeep) {
-      if (payload[field] !== undefined) {
-        essentialFields[field] = payload[field];
-      }
-    }
-    // Сохраняем timestamp последнего обновления для TTL очистки
-    essentialFields._lastUpdate = Date.now();
-    
-    deviceState.set(id, essentialFields);
-    
-    // Используем полный объект только для текущей обработки
+    // Обновляем состояние, сохраняя ВСЕ параметры полученные через WS.
+    // Зачем: система резолвинга должна быть полной — иначе теряются важные поля (например delay) и ломается трассировка.
     const newState = { ...oldState, ...payload };
+    newState._lastUpdate = Date.now(); // Зачем: TTL очистка кэша deviceState
+    deviceState.set(id, newState);
     
     // ❌ НЕ ПИШЕМ в state! Event-logger только читает, не модифицирует БД
     // state.set(id, newState);
@@ -2031,9 +2098,22 @@ const handleActionSet = (message) => {
     // В боевом WS клик по S4 может приходить как value ИЛИ как инкремент счётчика DI (onClick*Count/onHoldCount).
     const isTriggerCountEvent = isTriggerDevice && (keyParam === 'onClick1Count' || keyParam === 'onClick2Count' || keyParam === 'onHoldCount');
     const isTriggerValueEvent = isTriggerDevice && keyParam === 'value';
-    // Зачем: для датчиков‑источников (doppler/motion) запуск приходит не через value, а через поля измерений.
+    // Зачем: для датчиков‑источников (doppler/motion) запуск может приходить:
+    // - через спец‑поля (doppler/motion)
+    // - через value (S4/22), но только при реальном пересечении порога threshold_cross (low/high/quiet)
     const isTriggerSensorEvent = isTriggerDevice && (keyParam === 'doppler' || keyParam === 'motion');
-    const isTriggerStartEvent = isTriggerValueEvent || isTriggerCountEvent || isTriggerSensorEvent;
+    const thresholdCross = signalSource?.action?.threshold_cross;
+    const isDopplerThresholdValueEvent =
+      isTriggerDevice &&
+      keyParam === 'value' &&
+      signalSource?.kind === 'sensor' &&
+      thresholdCross &&
+      typeof thresholdCross.kind === 'string' &&
+      thresholdCross.kind !== 'base' &&
+      Array.isArray(signalSource?.linked?.matched_trigger_scripts) &&
+      signalSource.linked.matched_trigger_scripts.some((x) => typeof x === 'string' && x);
+
+    const isTriggerStartEvent = isTriggerValueEvent || isTriggerCountEvent || isTriggerSensorEvent || isDopplerThresholdValueEvent;
 
     // Зачем: для S4 удержание/диммирование идёт серией ACTION_SET(value) и не должно дробиться на разные trace_id.
     // Склеиваем по gesture_id (down/move/up) в пределах одного устройства.
@@ -2694,7 +2774,6 @@ const sendEvent = (event) => {
 
 // Запись события в локальный файл
 // Зачем: резервное хранение событий в локальных файлах
-const fs = require('fs');
 const { VAR } = require('../assets/constants');
 
 // Зачем: все файловые логи логгера (events/ws) держим в logs/logger, а не в var/log (var — для данных/БД)
@@ -3275,32 +3354,9 @@ const connect = () => {
             // Зачем: при GET payload содержит полное состояние устройства, используем его как есть
             const { id, payload } = message;
             if (id && payload && typeof payload === 'object') {
-              // Зачем: при начальной загрузке payload - это полное состояние, но храним только нужные поля
-              const essentialFields = {};
-              const fieldsToKeep = ['executed', 'last_execution', 'value', 'brightness', 'r', 'g', 'b',
-                                    'fan_speed', 'mode', 'direction', 'setpoint', 'temperature', 'humidity',
-                                    'co2', 'code', 'title', 'name', 'parent', 'site', 'project', 'type',
-                                    'state', // Зачем: для TIMER и подобных сущностей нужно корректно сравнивать old/new, иначе плодим ложные trace_id
-                                    'time', 'script', // Зачем: timer (ACTION_TIMER_START) хранит установленное время в time и ссылку на script
-                                    'bind', // Зачем: связь consumer↔channel для trace_id (и enrichChannelEvent)
-                                    // Зачем: поля для резолва допплер-порогов (ACTION_DOPPLER_HANDLE)
-                                    'sensorId', 'low', 'high', 'onLowThreshold', 'onHighThreshold', 'onQuiet',
-                                    // Зачем: поля для резолва целей скриптов (script-targets.js) и построения цепочек
-                                    'action', 'schedule', 'clock', 'timer', 'duration',
-                                    // Зачем: триггеры устройств (SOURCE) — иначе "S4 ... / Click" не попадёт в логи и trace.
-                                    'onDoppler', 'onTrue', 'onFalse', 'onChange', 'onOpen', 'onClose',
-                                    // Зачем: реальные кнопки/DI часто хранят триггеры как массивы скриптов (onClick/onHold/...).
-                                    // Эти поля приходят только в init snapshot (GET) и нужны, чтобы SOURCE склеивался со SCRIPT.
-                                    'onClick', 'onClick2', 'onHold', 'onOn', 'onOff',
-                                    // Зачем: action-объекты хранят ссылки в target/ref/id/site и вложенный payload.*
-                                    'target', 'ref', 'id', 'payload', 'device', 'do', 'dim'];
-              for (const field of fieldsToKeep) {
-                if (payload[field] !== undefined) {
-                  essentialFields[field] = payload[field];
-                }
-              }
-              essentialFields._lastUpdate = Date.now();
-              deviceState.set(id, essentialFields);
+              // Зачем: init snapshot (GET) должен сохранять ВСЕ параметры устройства как пришли через WS.
+              const fullState = { ...payload, _lastUpdate: Date.now() };
+              deviceState.set(id, fullState);
               // ❌ НЕ ПИШЕМ в state! Event-logger только читает
               // state.set(id, payload);
               
