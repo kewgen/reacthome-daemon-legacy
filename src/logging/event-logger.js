@@ -377,11 +377,74 @@ const enrichChannelEvent = (id, event) => {
   
   // Добавляем объект endDevice (через bind)
   let endDeviceId = channel.bind;
-  
-  // Фолбэк: обратная привязка (логика из src/monitor.js)
-  // Зачем: некоторые потребители (например, шторы) имеют bind, указывающий на канал актуатора
+
+  // Фолбэк 1: проверяем bind в deviceState/state (часто для DI/S4 bind хранится в payload/state)
+  if (!endDeviceId) {
+    try {
+      const ds = deviceState.get(id);
+      if (ds && typeof ds.bind === 'string' && ds.bind) endDeviceId = ds.bind;
+    } catch (_) {}
+  }
+  if (!endDeviceId) {
+    try {
+      const st = state.get(id);
+      if (st && typeof st.bind === 'string' && st.bind) endDeviceId = st.bind;
+    } catch (_) {}
+  }
+
+  // Фолбэк 2: обратная привязка (логика из src/monitor.js)
+  // Зачем: некоторые потребители (например, шторы) имеют bind, указывающий на канал актуатора,
+  // а ключи в reverseBindingCache могут храниться по разным вариантам (channel id, base mac, mac/type/index).
   if (!endDeviceId) {
     endDeviceId = reverseBindingCache.get(id);
+    if (!endDeviceId && parsed && parsed.mac) {
+      const base = parsed.mac;
+      endDeviceId = reverseBindingCache.get(base) ||
+                    reverseBindingCache.get(`${base}/do/${parsed.index}`) ||
+                    reverseBindingCache.get(`${base}/dim/${parsed.index}`) ||
+                    reverseBindingCache.get(`${base}/di/${parsed.index}`);
+    }
+  }
+
+  // Фолбэк 3: если ничего не найдено — сканируем `state` на предмет устройств, у которых bind === id/варианты
+  if (!endDeviceId) {
+    try {
+      const fullState = state.state();
+
+      for (const [candidateId, candidateDevice] of Object.entries(fullState)) {
+        if (!candidateDevice) continue;
+        const b = candidateDevice.bind || (candidateDevice.payload && candidateDevice.payload.bind) || (candidateDevice.state && candidateDevice.state.bind) || null;
+        if (!b) continue;
+        
+        const isMatch = (b === id || (parsed && b === parsed.mac) || (parsed && b === `${parsed.mac}/do/${parsed.index}`) || (parsed && b === `${parsed.mac}/${parsed.type}/${parsed.index}`));
+        
+        if (isMatch) {
+          endDeviceId = candidateId;
+          break;
+        }
+      }
+    } catch (err) {
+    }
+  }
+
+  // Фолбэк 4: специфичные привязки S4/DI (onClick, onHold, etc)
+  if (!endDeviceId) {
+    try {
+      const st = state.get(id) || deviceState.get(id);
+      if (st) {
+        const triggerFields = ['onClick', 'onHold', 'onOn', 'onOff', 'onClick2'];
+        for (const field of triggerFields) {
+          const val = st[field];
+          if (Array.isArray(val) && val.length > 0) {
+            endDeviceId = val[0];
+            break;
+          } else if (typeof val === 'string' && val) {
+            endDeviceId = val;
+            break;
+          }
+        }
+      }
+    } catch (_) {}
   }
   
   if (endDeviceId && typeof endDeviceId === 'string') {
