@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.66 (ручное управление версией)
+ * Версия: 1.0.67 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.66';
+const VERSION = '1.0.67';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -1018,10 +1018,13 @@ function getDeviceCategory(type) {
   if (SHIELD_ACTUATOR_TYPES.includes(type)) return 'Актуатор';
   if (SHIELD_SENSOR_TYPES.includes(type)) return 'Сенсор';
   if (SHIELD_CONTROL_TYPES.includes(type)) return 'Панель';
-  if (ENDPOINT_DEVICE_TYPES.includes(type)) return 'Конечное';
+  if (ENDPOINT_DEVICE_TYPES.includes(type)) return 'Потребитель';
   
   // Обработка строковых типов сенсоров
   if (SENSOR_STRING_TYPES.includes(type)) return 'Сенсор';
+  
+  // Обработка потребителей (строковые типы)
+  if (typeof type === 'string' && CONSUMER_TYPES.includes(type)) return 'Потребитель';
   
   // Обработка интеграций (внешнее оборудование)
   if (INTEGRATION_TYPES.includes(type)) return 'Интеграция';
@@ -1082,7 +1085,7 @@ function getDeviceIcon(deviceType, category) {
       if ([0x25].includes(deviceType)) return '📱';
       return '🖥️';
     }
-    if (category === 'Конечное') {
+    if (category === 'Потребитель') {
       if ([0x26, 0x27, 0x2a, 0x2c, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x3b].includes(deviceType)) {
         return '📱';
       }
@@ -1120,6 +1123,50 @@ function getDeviceName(payload) {
   }
   // Если ничего нет
   return 'Без названия';
+}
+
+/**
+ * Зачем: Создает унифицированный объект устройства из payload.
+ * Используется в processDevicesAndSites и addMissingDevice для исключения дублирования.
+ */
+function createDeviceObject(deviceId, payload, siteMap, sites) {
+  if (!payload || !payload.type) return null;
+
+  const deviceType = payload.type;
+  
+  // 1. Определяем помещение
+  let siteId = payload.site || (payload.state && payload.state.site);
+  let siteName = null;
+  if (siteId) {
+    if (Array.isArray(siteId)) siteId = siteId[0];
+    if (typeof siteId === 'string') {
+      // Пытаемся найти в переданном массиве sites или в siteMap
+      const siteObj = sites ? sites.find(s => s.id === siteId) : null;
+      siteName = siteObj ? siteObj.name : (siteMap ? siteMap.get(siteId) : null);
+    }
+  }
+
+  // 2. Базовые параметры
+  const category = getDeviceCategory(deviceType);
+  const deviceName = getDeviceName(payload);
+  
+  // Зачем: Специальная обработка имени типа
+  let typeName = DEVICE_TYPE_NAMES[deviceType] || 
+                 (typeof deviceType === 'string' ? deviceType.toUpperCase() : `Тип0x${deviceType.toString(16)}`);
+
+  return {
+    id: deviceId,
+    name: deviceName,
+    title: payload.title || null,
+    code: payload.code || null,
+    nameField: payload.name || null,
+    type: deviceType,
+    typeName: typeName,
+    category: category,
+    siteId: siteId || null,
+    site: siteName || null,
+    bind: payload.bind || (payload.state && payload.state.bind) || null,
+  };
 }
 
 // Загружаем устройства и помещения через WebSocket
@@ -1357,210 +1404,21 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
           return;
         }
         
-        const deviceType = payload.type;
-        
         // Пропускаем помещения и проекты (они уже обработаны выше)
-        if (deviceType === 'site' || deviceType === 'SITE' || deviceType === 'project' || deviceType === 'PROJECT') {
+        if (payload.type === 'site' || payload.type === 'SITE' || payload.type === 'project' || payload.type === 'PROJECT') {
           return;
         }
-        
-        // Обрабатываем устройства с числовым типом (щитовые и конечные)
-        if (typeof deviceType === 'number' && deviceType !== 0x00) {
-          // Проверяем, не добавлено ли уже устройство с таким ID
-          if (addedDeviceIds.has(deviceId)) {
-            return;
-          }
-          
-          // Для актуаторов site берется из WebSocket (payload.site или state.site)
-          // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
-          let siteId = payload.site || (payload.state && payload.state.site);
-          let siteName = null;
-          
-          if (siteId) {
-            if (Array.isArray(siteId)) {
-              siteId = siteId[0];
-            }
-            if (typeof siteId === 'string') {
-              siteName = siteMap.get(siteId) || null;
-            }
-          }
-          
-          const category = getDeviceCategory(deviceType);
-          const deviceName = getDeviceName(payload);
-          // Не добавляем иконку к имени здесь, она будет добавлена при рендеринге
 
-          devices.push({
-            id: deviceId,
-            name: deviceName,
-            title: payload.title || null,  // Сохраняем все идентификаторы отдельно для детального отображения
-            code: payload.code || null,
-            nameField: payload.name || null,  // Сохраняем поле name из payload отдельно
-            type: deviceType,
-            typeName: DEVICE_TYPE_NAMES[deviceType] || `Тип0x${deviceType.toString(16)}`,
-            category: category,
-            siteId: siteId || null,
-            site: siteName || null,
-          });
-          
-          addedDeviceIds.add(deviceId); // Помечаем как добавленное
-          processedDeviceIds.add(deviceId); // Помечаем как обработанное
-        }
-        
         // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-        if (typeof deviceType === 'string' && ACTION_TYPES.includes(deviceType)) {
+        if (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type)) {
           return;
         }
-        
-        // Обрабатываем потребители (строковые типы)
-        if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
-          // Проверяем, не добавлено ли уже устройство с таким ID
-          if (addedDeviceIds.has(deviceId)) {
-            return;
-          }
-          
-          let siteId = payload.site;
-          let siteName = null;
-          
-          if (siteId) {
-            if (Array.isArray(siteId)) {
-              siteId = siteId[0];
-            }
-            if (typeof siteId === 'string') {
-              siteName = siteMap.get(siteId) || null;
-            }
-          }
-          
-          const deviceName = getDeviceName(payload);
-          // Не добавляем иконку к имени здесь, она будет добавлена при рендеринге
 
-          devices.push({
-            id: deviceId,
-            name: deviceName,
-            title: payload.title || null,  // Сохраняем все идентификаторы отдельно для детального отображения
-            code: payload.code || null,
-            nameField: payload.name || null,  // Сохраняем поле name из payload отдельно
-            type: deviceType,
-            typeName: deviceType.toUpperCase(),
-            category: 'Потребитель',
-            siteId: siteId || null,
-            site: siteName || null,
-            bind: payload.bind || null,
-          });
-          
-          addedDeviceIds.add(deviceId); // Помечаем как добавленное
-          processedDeviceIds.add(deviceId); // Помечаем как обработанное
-        }
+        // Зачем: Используем унифицированный конструктор объектов устройств
+        const device = createDeviceObject(deviceId, payload, siteMap, null);
         
-        // Обрабатываем датчики протечки (leakage_sensor)
-        if (deviceType === 'leakage_sensor') {
-          // Проверяем, не добавлено ли уже устройство с таким ID
-          if (addedDeviceIds.has(deviceId)) {
-            return;
-          }
-          
-          let siteId = payload.site;
-          let siteName = null;
-          
-          if (siteId) {
-            if (Array.isArray(siteId)) {
-              siteId = siteId[0];
-            }
-            if (typeof siteId === 'string') {
-              siteName = siteMap.get(siteId) || null;
-            }
-          }
-          
-          const deviceName = getDeviceName(payload);
-
-          devices.push({
-            id: deviceId,
-            name: deviceName,
-            title: payload.title || null,
-            code: payload.code || null,
-            nameField: payload.name || null,
-            type: deviceType,
-            typeName: 'LEAKAGE_SENSOR',
-            category: 'Сенсор',
-            siteId: siteId || null,
-            site: siteName || null,
-            bind: payload.bind || null,
-          });
-          
-          addedDeviceIds.add(deviceId);
-          processedDeviceIds.add(deviceId);
-        }
-        
-        // Обрабатываем тип "daemon" отдельно (системное устройство)
-        // Зачем: Устройства типа "daemon" не входят в CONSUMER_TYPES, поэтому обрабатываем отдельно
-        if ((deviceType === 'daemon' || deviceType === 'DAEMON') && !addedDeviceIds.has(deviceId)) {
-          let siteId = payload.site;
-          let siteName = null;
-          
-          if (siteId) {
-            if (Array.isArray(siteId)) {
-              siteId = siteId[0];
-            }
-            if (typeof siteId === 'string') {
-              siteName = siteMap.get(siteId) || null;
-            }
-          }
-          
-          const deviceName = getDeviceName(payload);
-          
-          devices.push({
-            id: deviceId,
-            name: deviceName,
-            title: payload.title || null,
-            code: payload.code || null,
-            nameField: payload.name || null,
-            type: deviceType,
-            typeName: 'DAEMON',
-            category: 'Система',
-            siteId: siteId || null,
-            site: siteName || null,
-            bind: payload.bind || null,
-          });
-          
-          addedDeviceIds.add(deviceId);
-          processedDeviceIds.add(deviceId);
-        }
-        
-        // Обрабатываем остальные строковые типы сенсоров и интеграций
-        const isStringSensorOrIntegration = 
-          SENSOR_STRING_TYPES.includes(deviceType) || 
-          INTEGRATION_TYPES.includes(deviceType) ||
-          CONSUMER_TYPES.includes(deviceType);
-        
-        if (isStringSensorOrIntegration && !addedDeviceIds.has(deviceId)) {
-          let siteId = payload.site;
-          let siteName = null;
-          
-          if (siteId) {
-            if (Array.isArray(siteId)) {
-              siteId = siteId[0];
-            }
-            if (typeof siteId === 'string') {
-              siteName = siteMap.get(siteId) || null;
-            }
-          }
-          
-          const deviceName = getDeviceName(payload);
-          const category = getDeviceCategory(deviceType);
-
-          devices.push({
-            id: deviceId,
-            name: deviceName,
-            title: payload.title || null,
-            code: payload.code || null,
-            nameField: payload.name || null,
-            type: deviceType,
-            typeName: deviceType.toUpperCase(),
-            category: category,
-            siteId: siteId || null,
-            site: siteName || null,
-            bind: payload.bind || null,
-          });
-          
+        if (device && !addedDeviceIds.has(deviceId)) {
+          devices.push(device);
           addedDeviceIds.add(deviceId);
           processedDeviceIds.add(deviceId);
         }
@@ -2729,15 +2587,16 @@ class TerminalKitStatusDisplay {
     }
     
     // Зачем: Находим устройство типа "daemon" для вывода его id (только если включен флаг)
-    let daemonId = null;
-    if (SHOW_DAEMON_DUID) {
+    // Кешируем результат для оптимизации рендеринга
+    if (SHOW_DAEMON_DUID && !this._cachedDaemonId) {
       const daemonDevice = this.allDevices.find(d => {
         const type = d.type;
         return (typeof type === 'string' && (type === 'daemon' || type === 'DAEMON')) ||
                (typeof type === 'number' && d.typeName && d.typeName.toLowerCase().includes('daemon'));
       });
-      daemonId = daemonDevice ? daemonDevice.id : null;
+      if (daemonDevice) this._cachedDaemonId = daemonDevice.id;
     }
+    const daemonId = this._cachedDaemonId;
     
     // Зачем: Формируем заголовок с цветовой индикацией версии (зелёный/жёлтый) и duid (если включен флаг)
     const headerPrefix = `${this.locationName} | ${status} | ${time} | v`;
@@ -2936,13 +2795,13 @@ class TerminalKitStatusDisplay {
     };
     this.drawPanelBox(this.centerX, startY, this.centerWidth, height, tableTitle, this.activePanel === 1, scrollInfo);
     
-    // Заголовки таблицы с увеличенным пространством между полями (+5 символов)
+    // Заголовки таблицы
     const nameX = this.centerX + 1;
-    const nameWidth = 25; // 18 + 5 + 2
-    const typeX = nameX + nameWidth + 5; // Добавляем 5 символов пространства
-    const typeWidth = 18; // 13 + 5
-    const siteX = typeX + typeWidth + 5; // Добавляем 5 символов пространства
-    const siteWidth = this.centerWidth - (nameWidth + typeWidth + 10) - 2; // Остальное минус рамки
+    const nameWidth = 22;
+    const typeX = nameX + nameWidth + 3;
+    const typeWidth = 18;
+    const siteX = typeX + typeWidth + 3;
+    const siteWidth = this.centerWidth - (nameWidth + typeWidth + 6) - 2; // Остальное минус рамки
     
     term.moveTo(nameX, startY + 1);
     term.bold('Название');
@@ -2990,14 +2849,20 @@ class TerminalKitStatusDisplay {
       const isLeakageSensor = device.type === 'leakage_sensor';
       const leakageBindValue = deviceState?.bind || device.bind || null;
       const leakageBindChannelValue = leakageBindValue ? this.deviceStates.get(leakageBindValue)?.state?.value : undefined;
+      
       // Зачем: После старта у monitor нет данных по bind DI каналу, пока не сделать GET. Раньше это происходило только по ENTER.
       // Здесь инициируем GET по bind один раз, чтобы протечки отображались сразу, без ручного обновления.
       if (isLeakageSensor && typeof leakageBindValue === 'string' && /\/di\/\d+$/.test(leakageBindValue) && leakageBindChannelValue === undefined) {
         this.requestMissingDevice(leakageBindValue);
       }
+      
       const leakageWarnPrefix = isLeakageSensor && leakageBindChannelValue === 1 ? '⚠️ ' : '';
-      const name = (leakageWarnPrefix + (device.name || device.id || '—')).substring(0, maxNameLen);
-      const namePadded = name.padEnd(maxNameLen);
+      const name = (device.name || device.id || '—');
+      
+      // Вычисляем доступную ширину для имени с учетом префикса (⚠️ занимает 2 клетки + пробел = 3)
+      const visualPrefixWidth = leakageWarnPrefix ? 3 : 0;
+      const maxDisplayNameLen = nameWidth - iconSpace - visualPrefixWidth;
+      const displayName = name.substring(0, maxDisplayNameLen);
       
       // Проверяем различные условия для включенного состояния
       const isValueGreaterThanZero = typeof deviceValue === 'number' && deviceValue > 0;
@@ -3006,31 +2871,39 @@ class TerminalKitStatusDisplay {
       const shouldBeGreen = isValueGreaterThanZero || isValueTrue || isInverseTrueValueFalse;
       
       // Выводим иконку в фиксированном пространстве (4 визуальных символа: иконка + пробелы)
-      // Зачем: Обеспечиваем одинаковое расстояние от иконки до названия для всех устройств
-      // Большинство эмодзи занимают 2 визуальных символа, добавляем 2 пробела = 4 визуальных символа
       if (icon) {
         term(icon); // Выводим иконку (обычно 2 визуальных символа)
         term('  '); // Добавляем 2 пробела для фиксированного расстояния (итого 4 визуальных символа)
       } else {
         term(' '.repeat(iconSpace)); // Если иконки нет, выводим пробелы для сохранения выравнивания
       }
+
+      // Выводим префикс протечки если есть
+      if (leakageWarnPrefix) {
+        term(leakageWarnPrefix);
+      }
+      
       if (shouldBeGreen) {
-        term.green(namePadded); // Зелёный цвет для включенных устройств (value > 0, value: true или inverse: true && value: false)
+        term.green(displayName); // Зелёный цвет для включенных устройств
       } else {
-        term(namePadded);
+        term(displayName);
+      }
+      
+      // Заполняем остаток колонки пробелами для корректного выделения строки
+      const visualWidthTaken = iconSpace + visualPrefixWidth + displayName.length;
+      if (visualWidthTaken < nameWidth) {
+        term(' '.repeat(nameWidth - visualWidthTaken));
       }
       
       // Тип
       term.moveTo(typeX, y);
       const type = (device.typeName || '—').substring(0, typeWidth);
-      const typePadded = type.padEnd(typeWidth);
-      term(typePadded);
+      term(type.padEnd(typeWidth));
       
       // Помещение
       term.moveTo(siteX, y);
       const site = (device.site || '—').substring(0, siteWidth);
-      const sitePadded = site.padEnd(siteWidth);
-      term(sitePadded);
+      term(site.padEnd(siteWidth));
       
       // Сбрасываем стили после строки
       term.styleReset();
@@ -3462,15 +3335,12 @@ class TerminalKitStatusDisplay {
       
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
+      // Зачем: Оптимизируем поиск через Map (O(1))
       const bindValue = channelState?.bind || channelData?.bind;
       if (bindValue) {
-        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        linkedDevice = this.devicesByMac.get(bindValue);
         if (!linkedDevice && typeof bindValue === 'string') {
-          linkedDevice = this.allDevices.find(d => 
-            d.code === bindValue || 
-            d.name === bindValue ||
-            d.id === bindValue
-          );
+          linkedDevice = this.allDevices.find(d => d.code === bindValue);
         }
         if (!linkedDevice && typeof bindValue === 'string') {
           this.requestMissingDevice(bindValue);
@@ -3495,15 +3365,12 @@ class TerminalKitStatusDisplay {
       const channelState = channelData?.state || channelData || channelData?.payload || null;
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
+      // Зачем: Оптимизируем поиск через Map (O(1))
       const bindValue = channelState?.bind || channelData?.bind;
       if (bindValue) {
-        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        linkedDevice = this.devicesByMac.get(bindValue);
         if (!linkedDevice && typeof bindValue === 'string') {
-          linkedDevice = this.allDevices.find(d => 
-            d.code === bindValue || 
-            d.name === bindValue ||
-            d.id === bindValue
-          );
+          linkedDevice = this.allDevices.find(d => d.code === bindValue);
         }
         if (!linkedDevice && typeof bindValue === 'string') {
           this.requestMissingDevice(bindValue);
@@ -3528,15 +3395,12 @@ class TerminalKitStatusDisplay {
       const channelState = channelData?.state || channelData || channelData?.payload || null;
       let linkedDevice = null;
       // Метод 1: bind в канале актуатора содержит ID потребителя (UUID)
+      // Зачем: Оптимизируем поиск через Map (O(1))
       const bindValue = channelState?.bind || channelData?.bind;
       if (bindValue) {
-        linkedDevice = this.allDevices.find(d => d.id === bindValue);
+        linkedDevice = this.devicesByMac.get(bindValue);
         if (!linkedDevice && typeof bindValue === 'string') {
-          linkedDevice = this.allDevices.find(d => 
-            d.code === bindValue || 
-            d.name === bindValue ||
-            d.id === bindValue
-          );
+          linkedDevice = this.allDevices.find(d => d.code === bindValue);
         }
         if (!linkedDevice && typeof bindValue === 'string') {
           this.requestMissingDevice(bindValue);
@@ -3607,6 +3471,7 @@ class TerminalKitStatusDisplay {
       
       let actuator = this.devicesByMac.get(deviceMac);
       if (!actuator) {
+        // Fallback search by ID if not in Map (should not happen if Map is complete)
         actuator = this.allDevices.find(d => d.id === deviceMac);
         if (actuator) this.devicesByMac.set(deviceMac, actuator);
       }
@@ -4060,6 +3925,36 @@ class TerminalKitStatusDisplay {
       info.push(`  modified: —`);
     }
     
+    // Специальная секция для модулей контроля протечки (M1, тип 0xab)
+    // Зачем: M1 — это модель MIX_1, актуатор, который считывает состояние датчиков протечки и герконов
+    const isLeakageModule = device.type === 171 || device.type === 0xab; // M1
+    if (isLeakageModule) {
+      info.push('');
+      info.push(`Статус каналов контроля протечки (M1):`);
+      
+      // M1 обычно имеет DI каналы для датчиков
+      for (let i = 1; i <= 8; i++) {
+        const diId = `${device.id}/di/${i}`;
+        const diData = this.deviceStates.get(diId);
+        const diState = diData?.state || diData || null;
+        
+        if (diState) {
+          const val = diState.value;
+          const status = val === 1 ? '🔴 ТРЕВОГА' : (val === 0 ? '🟢 Норма' : '⚪ —');
+          info.push(`  DI/${i}: ${status} (val=${val !== undefined ? val : '—'})`);
+          
+          // Если есть привязанный потребитель (например, геркон или зона протечки)
+          const bindValue = diState.bind;
+          if (bindValue) {
+            const linked = this.devicesByMac.get(bindValue);
+            if (linked) {
+              info.push(`     🔗 Привязка: ${linked.name || linked.id}`);
+            }
+          }
+        }
+      }
+    }
+
     // Специальная секция для термостатов, гигростатов и CO2 статов - показываем bind к DI, sensor и скрипты
     // Зачем: Термостаты, гигростаты и CO2 статы теперь сенсоры, но имеют специальную логику отображения
     const isThermostat = device.type === 'thermostat' || device.type === 'THERMOSTAT' ||
@@ -4089,13 +3984,15 @@ class TerminalKitStatusDisplay {
           const channelNum = bindParts[2];
           
           // Получаем информацию о мастер-устройстве (S4 модуль)
-          const actuator = this.allDevices.find(d => d.id === actuatorId);
+          const actuator = this.devicesByMac.get(actuatorId);
           if (actuator) {
             info.push(`     → Модуль: ${actuator.title || actuator.code || actuatorId}`);
             info.push(`     → Тип: ${DEVICE_TYPE_NAMES[actuator.type] || actuator.type}`);
             
-            // Показываем встроенную температуру S4 модуля
-            const actuatorState = this.deviceStates.get(actuatorId);
+            // Показываем встроенную температуру модуля (S4/M1 и т.д.)
+            // Зачем: Исправлено обращение к .state.temperature
+            const actuatorData = this.deviceStates.get(actuatorId);
+            const actuatorState = actuatorData?.state;
             if (actuatorState && actuatorState.temperature !== undefined) {
               info.push(`     → Встроенная температура: ${actuatorState.temperature}°C`);
             }
@@ -4116,7 +4013,7 @@ class TerminalKitStatusDisplay {
         info.push(`  🌡️  Датчик температуры:`);
         info.push(`     ID: ${sensorId}`);
         
-        const sensor = this.allDevices.find(d => d.id === sensorId);
+        const sensor = this.devicesByMac.get(sensorId);
         const sensorState = this.deviceStates.get(sensorId);
         
         if (sensor || sensorState) {
@@ -4132,7 +4029,7 @@ class TerminalKitStatusDisplay {
           // Проверяем мастер-устройство датчика
           const sensorMaster = sensorState?.master || sensor?.master;
           if (sensorMaster) {
-            const master = this.allDevices.find(d => d.id === sensorMaster);
+            const master = this.devicesByMac.get(sensorMaster);
             const masterName = master?.title || master?.code || sensorMaster.substring(0, 17) + '...';
             info.push(`     Мастер: ${masterName}`);
             
@@ -4175,7 +4072,7 @@ class TerminalKitStatusDisplay {
       for (const script of scripts) {
         const scriptId = (state && state[script.key]) || device[script.key];
         if (scriptId) {
-          const scriptDevice = this.allDevices.find(d => d.id === scriptId);
+          const scriptDevice = this.devicesByMac.get(scriptId);
           const scriptName = scriptDevice?.title || scriptDevice?.code || scriptId.substring(0, 8) + '...';
           info.push(`     ✅ ${script.name}: ${scriptName}`);
           hasScripts = true;
@@ -4581,7 +4478,8 @@ class TerminalKitStatusDisplay {
           info.push(`  Привязка к Modbus: ${modbusId}/MODBUS/${address}`);
           
           // Ищем MODBUS устройство
-          const modbusDevice = this.allDevices.find(d => d.id === modbusId);
+          // Зачем: Оптимизируем поиск через Map (O(1))
+          const modbusDevice = this.devicesByMac.get(modbusId);
           if (modbusDevice) {
             const modbusName = modbusDevice.code || modbusDevice.title || modbusDevice.name || modbusId;
             info.push(`    MODBUS устройство: ${modbusName}`);
@@ -4718,7 +4616,8 @@ class TerminalKitStatusDisplay {
         // Показываем каждый датчик из temperature_ext[]
         state.temperature_ext.forEach((sensorId, idx) => {
           // Ищем датчик в списке всех устройств
-          const sensor = this.allDevices.find(d => d.id === sensorId);
+          // Зачем: Оптимизируем поиск через Map (O(1))
+          const sensor = this.devicesByMac.get(sensorId);
           
           if (sensor) {
             const sensorData = this.deviceStates.get(sensorId);
@@ -4767,7 +4666,8 @@ class TerminalKitStatusDisplay {
       info.push(`🏠 Мастер-устройство (S3/S4):`);
       
       // Ищем мастер-устройство
-      const master = this.allDevices.find(d => d.id === state.master);
+      // Зачем: Оптимизируем поиск через Map (O(1))
+      const master = this.devicesByMac.get(state.master);
       
       if (master) {
         const masterData = this.deviceStates.get(master.id);
@@ -4819,77 +4719,6 @@ class TerminalKitStatusDisplay {
         // Мастер не найден
         info.push(`  🔴 ${state.master.substring(0, 20)}...`);
         info.push(`  ❌ Мастер-устройство не найдено в системе`);
-      }
-    }
-    
-    // Для модуля датчиков протечки (M1, тип 171) показываем подключенные датчики
-    const isLeakageModule = device.type === 171 || device.type === 0xab; // M1
-    if (isLeakageModule) {
-      info.push('');
-      info.push(`💧 Датчики протечки (DI каналы):`);
-      
-      // Ищем все датчики протечки, привязанные к этому модулю
-      const leakageSensors = this.allDevices.filter(d => {
-        const data = this.deviceStates.get(d.id);
-        const bind = data?.state?.bind || d.bind;
-        // Проверяем, что bind начинается с ID модуля
-        return bind && bind.startsWith(device.id + '/di/');
-      });
-      
-      if (leakageSensors.length === 0) {
-        info.push(`  (нет подключенных датчиков)`);
-      } else {
-        info.push(`  Всего датчиков: ${leakageSensors.length}`);
-        
-        // Сортируем по номеру DI канала
-        leakageSensors.sort((a, b) => {
-          const aData = this.deviceStates.get(a.id);
-          const bData = this.deviceStates.get(b.id);
-          const aBind = (aData?.state?.bind || a.bind || '').match(/\/di\/(\d+)/);
-          const bBind = (bData?.state?.bind || b.bind || '').match(/\/di\/(\d+)/);
-          const aNum = aBind ? parseInt(aBind[1]) : 999;
-          const bNum = bBind ? parseInt(bBind[1]) : 999;
-          return aNum - bNum;
-        });
-        
-        // Показываем каждый датчик протечки
-        leakageSensors.forEach(sensor => {
-          const sensorData = this.deviceStates.get(sensor.id);
-          const sensorState = sensorData?.state;
-          const sensorReady = sensorState?.ready;
-          const sensorOnline = sensorState?.online;
-          const leakage = sensorState?.leakage;
-          const bindValueForSensor = sensorState?.bind || sensor.bind;
-          const bindChannelState = bindValueForSensor ? this.deviceStates.get(bindValueForSensor)?.state : null;
-          // Инвертируем отображение: value=1 на DI/канале = протечка
-          const leakageFromBind = bindChannelState && bindChannelState.value !== undefined
-            ? (bindChannelState.value === 1)
-            : undefined;
-          const leakActive =
-            (leakage === true) ||
-            (leakage === false ? false : (leakageFromBind === true)) ||
-            (typeof leakage === 'number' ? leakage > 0 : false);
-          
-          // Извлекаем номер DI канала
-          const bind = sensorState?.bind || sensor.bind;
-          const diMatch = bind?.match(/\/di\/(\d+)/);
-          const diNum = diMatch ? diMatch[1] : '?';
-          
-          // Статус датчика
-          const status = leakActive ? '⚠️ ' : (sensorReady ? '🟢' : (sensorOnline ? '🟡' : '🔴'));
-          
-          // Название датчика (приоритет: code → title)
-          const sensorName = sensor.code || sensor.title || sensor.id.substring(0, 20) + '...';
-          
-          // Помещение датчика
-          const sensorSite = sensor.site || '—';
-          
-          info.push(`  DI/${diNum}: ${status} ${sensorName}`);
-          if (leakActive) {
-            info.push(`         💧 ПРОТЕЧКА ОБНАРУЖЕНА!`);
-          }
-          info.push(`         Помещение: ${sensorSite}`);
-        });
       }
     }
     
@@ -4995,7 +4824,7 @@ class TerminalKitStatusDisplay {
         info.push(`  Источник данных:`);
         info.push(`    ID: ${sourceId}`);
         
-        const sourceDevice = this.allDevices.find(d => d.id === sourceId);
+        const sourceDevice = this.devicesByMac.get(sourceId);
         if (sourceDevice) {
           const sourceName = sourceDevice.code || sourceDevice.title || sourceDevice.name || sourceId;
           info.push(`    Устройство: ${sourceName}`);
@@ -5022,7 +4851,7 @@ class TerminalKitStatusDisplay {
       dopplerScripts.forEach(s => {
         const scriptId = payload[s.key];
         if (scriptId) {
-          const scriptDev = this.allDevices.find(d => d.id === scriptId);
+          const scriptDev = this.devicesByMac.get(scriptId);
           const scriptName = scriptDev?.title || scriptDev?.code || scriptId.substring(0, 8) + '...';
           info.push(`    ${s.name}: ${scriptName}`);
         } else {
@@ -5187,7 +5016,8 @@ class TerminalKitStatusDisplay {
     });
     
     // Обновляем метаданные устройства (name, code, title, site) из payload, если они изменились
-    const existingDevice = this.allDevices.find(d => d.id === deviceId);
+    // Зачем: Оптимизируем поиск существующего устройства через Map (O(1) вместо O(N))
+    const existingDevice = this.devicesByMac.get(deviceId);
     if (existingDevice) {
       let metadataChanged = false;
       
@@ -5239,6 +5069,16 @@ class TerminalKitStatusDisplay {
         this.cache.tableData = null;
         this.cache.tableDataHash = null;
         stateChanged = true; // Триггерим перерисовку
+      }
+    }
+
+    // Зачем: Для выбранного устройства/канала нужно обновлять UI при любом ACTION_SET,
+    // иначе ручной GET по Enter обновит lastUpdate, но интерфейс визуально «замрёт».
+    if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length) {
+      const selectedDevice = this.devices[this.selectedIndex];
+      if (selectedDevice && (selectedDevice.id === deviceId || (deviceId.includes('/') && deviceId.startsWith(selectedDevice.id + '/')))) {
+        this.cache.deviceInfoByDeviceId.delete(selectedDevice.id);
+        this.updateDeviceInfo();
       }
     }
     
@@ -5320,7 +5160,8 @@ class TerminalKitStatusDisplay {
     if (this.requestedMissingDevices.has(deviceId)) return;
     
     // Проверяем, что устройство действительно отсутствует в списке
-    const exists = this.allDevices.some(d => d.id === deviceId);
+    // Зачем: Оптимизируем проверку через Map
+    const exists = this.devicesByMac.has(deviceId);
     if (exists) return;
     
     this.requestedMissingDevices.add(deviceId);
@@ -5341,7 +5182,8 @@ class TerminalKitStatusDisplay {
     }
     
     // Проверяем, что устройство существует
-    const device = this.allDevices.find(d => d.id === deviceId);
+    // Зачем: Оптимизируем поиск через Map
+    const device = this.devicesByMac.get(deviceId);
     if (!device) {
       return;
     }
@@ -5371,7 +5213,8 @@ class TerminalKitStatusDisplay {
             // Если bind это UUID (не содержит '/'), добавляем его для запроса
             if (typeof bind === 'string' && !bind.includes('/')) {
               // Проверяем, что устройство отсутствует и еще не запрошено
-              const exists = this.allDevices.some(d => d.id === bind);
+              // Зачем: Оптимизируем проверку через Map
+              const exists = this.devicesByMac.has(bind);
               if (!exists && !this.requestedMissingDevices.has(bind)) {
                 bindUuids.add(bind);
               }
@@ -5386,13 +5229,14 @@ class TerminalKitStatusDisplay {
           const site = deviceState.site;
           if (typeof site === 'string') {
             // Проверяем, что помещение отсутствует и еще не запрошено
-            const siteExists = this.allDevices.some(d => d.id === site) || this.sites.some(s => s.id === site);
+            // Зачем: Оптимизируем проверку через Map и sites array
+            const siteExists = this.devicesByMac.has(site) || this.sites.some(s => s.id === site);
             if (!siteExists && !this.requestedMissingDevices.has(site)) {
               bindUuids.add(site);
             }
           } else if (Array.isArray(site) && site.length > 0) {
             const siteId = site[0];
-            const siteExists = this.allDevices.some(d => d.id === siteId) || this.sites.some(s => s.id === siteId);
+            const siteExists = this.devicesByMac.has(siteId) || this.sites.some(s => s.id === siteId);
             if (!siteExists && !this.requestedMissingDevices.has(siteId)) {
               bindUuids.add(siteId);
             }
@@ -5417,208 +5261,58 @@ class TerminalKitStatusDisplay {
   // Добавляем отсутствующее устройство в список после получения его данных (логика из resolve-actuator-via-websocket.js)
   addMissingDevice(deviceId, payload) {
     // Проверяем, что устройство еще не добавлено
-    if (this.allDevices.some(d => d.id === deviceId)) {
+    // Зачем: Оптимизируем проверку наличия устройства через Map
+    if (this.devicesByMac.has(deviceId)) {
       console.log(`[DEBUG] Устройство ${deviceId} уже добавлено, пропускаем`);
       return;
     }
     
     if (!payload || !payload.type) {
-      // Обрабатываем помещения (type === 'site' или 'SITE'), которые могут не иметь числового типа
-      const isSite = payload.type === 'site' || payload.type === 'SITE' || payload.type === 'project' || payload.type === 'PROJECT';
-      if (isSite) {
-        const siteName = payload.title || payload.code || payload.name || deviceId;
-        // Проверяем, что помещение еще не добавлено
-        if (!this.sites.some(s => s.id === deviceId)) {
-          this.sites.push({ id: deviceId, name: siteName });
-          // Сортируем помещения по имени
-          this.sites.sort((a, b) => a.name.localeCompare(b.name));
-          console.log(`[DEBUG] Добавлено помещение: ${siteName} (${deviceId})`);
-          // Пересобираем строки фильтров (лучше отложить, если пользователь скроллит)
-          this.scheduleUiRebuild({ rebuildFilterRows: true });
-        }
-        return;
-      }
-      
       console.log(`[DEBUG] Устройство ${deviceId} не имеет типа, пропускаем`);
       return;
     }
     
-    const deviceType = payload.type;
-    let device = null;
-    
-    // Обрабатываем устройства с числовым типом
-    if (typeof deviceType === 'number' && deviceType !== 0x00) {
-        // Для актуаторов site берется из WebSocket (payload.site или state.site)
-        // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
-        let siteId = payload.site || (payload.state && payload.state.site);
-      let siteName = null;
-      
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
-        }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
-        }
+    // Обрабатываем помещения (type === 'site' или 'SITE'), которые могут не иметь числового типа
+    const isSite = payload.type === 'site' || payload.type === 'SITE' || payload.type === 'project' || payload.type === 'PROJECT';
+    if (isSite) {
+      const siteName = payload.title || payload.code || payload.name || deviceId;
+      // Проверяем, что помещение еще не добавлено
+      if (!this.sites.some(s => s.id === deviceId)) {
+        this.sites.push({ id: deviceId, name: siteName });
+        // Сортируем помещения по имени
+        this.sites.sort((a, b) => a.name.localeCompare(b.name));
+        console.log(`[DEBUG] Добавлено помещение: ${siteName} (${deviceId})`);
+        // Пересобираем строки фильтров (лучше отложить, если пользователь скроллит)
+        this.scheduleUiRebuild({ rebuildFilterRows: true });
       }
-      
-      const category = getDeviceCategory(deviceType);
-      const deviceName = getDeviceName(payload);
-
-      device = {
-        id: deviceId,
-        name: deviceName,
-        title: payload.title || null,  // Сохраняем все идентификаторы отдельно для детального отображения
-        code: payload.code || null,
-        nameField: payload.name || null,  // Сохраняем поле name из payload отдельно
-        type: deviceType,
-        typeName: DEVICE_TYPE_NAMES[deviceType] || `Тип0x${deviceType.toString(16)}`,
-        category: category,
-        siteId: siteId || null,
-        site: siteName || null,
-      };
+      return;
     }
+
     // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-    else if (typeof deviceType === 'string' && ACTION_TYPES.includes(deviceType)) {
-      return; // Не добавляем ACTION_* в список устройств
+    if (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type)) {
+      return;
     }
-    // Обрабатываем потребители (строковые типы)
-    else if (typeof deviceType === 'string' && CONSUMER_TYPES.includes(deviceType)) {
-      let siteId = payload.site;
-      let siteName = null;
-      
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
-        }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
-        }
-      }
-      
-      const deviceName = getDeviceName(payload);
 
-      device = {
-        id: deviceId,
-        name: deviceName,
-        title: payload.title || null,  // Сохраняем все идентификаторы отдельно для детального отображения
-        code: payload.code || null,
-        nameField: payload.name || null,  // Сохраняем поле name из payload отдельно
-        type: deviceType,
-        typeName: deviceType.toUpperCase(),
-        category: 'Потребитель',
-        siteId: siteId || null,
-        site: siteName || null,
-        bind: payload.bind || null,
-      };
-    }
-    // Обрабатываем датчики протечки (leakage_sensor)
-    else if (deviceType === 'leakage_sensor') {
-      let siteId = payload.site;
-      let siteName = null;
-      
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
-        }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
-        }
-      }
-      
-      const deviceName = getDeviceName(payload);
-
-      device = {
-        id: deviceId,
-        name: deviceName,
-        title: payload.title || null,
-        code: payload.code || null,
-        nameField: payload.name || null,
-        type: deviceType,
-        typeName: 'LEAKAGE_SENSOR',
-        category: 'Сенсор',
-        siteId: siteId || null,
-        site: siteName || null,
-        bind: payload.bind || null,
-      };
-    }
-    // Обрабатываем остальные строковые типы сенсоров и интеграций
-    else if (SENSOR_STRING_TYPES.includes(deviceType) || 
-             INTEGRATION_TYPES.includes(deviceType) ||
-             CONSUMER_TYPES.includes(deviceType)) {
-      let siteId = payload.site;
-      let siteName = null;
-      
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
-        }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
-        }
-      }
-      
-      const deviceName = getDeviceName(payload);
-      const category = getDeviceCategory(deviceType);
-
-      device = {
-        id: deviceId,
-        name: deviceName,
-        title: payload.title || null,
-        code: payload.code || null,
-        nameField: payload.name || null,
-        type: deviceType,
-        typeName: deviceType.toUpperCase(),
-        category: category,
-        siteId: siteId || null,
-        site: siteName || null,
-        bind: payload.bind || null,
-      };
-    }
+    // Зачем: Используем универсальный конструктор объектов устройств
+    const device = createDeviceObject(deviceId, payload, null, this.sites);
     
-    // Добавляем устройство в списки, если оно было создано
     if (device) {
-      console.log(`[DEBUG] Успешно добавлено устройство: ${deviceId}, название: ${device.name}, тип: ${device.type}`);
+      // Сохраняем устройство в основных коллекциях
       this.allDevices.push(device);
       this.devicesByMac.set(deviceId, device);
       
-      // Резолвим помещения для актуаторов по их каналам после добавления устройства
-      // Если добавленное устройство связано с каналом актуатора, обновляем помещение актуатора
-      // Также обновляем связанные устройства в каналах актуаторов
-      // Ищем актуаторы, каналы которых связаны с этим устройством через bind
-      for (const actuator of this.allDevices) {
-        if (actuator.category === 'Актуатор' && typeof actuator.type === 'number') {
-          const channels = this.getActuatorChannels(actuator.id, actuator.type);
-          // Проверяем по bind, а не по linkedDevice, так как linkedDevice может быть null до резолва
-          const linkedChannels = channels.filter(ch => 
-            ch.channelState && ch.channelState.bind === deviceId
-          );
-          
-          if (linkedChannels.length > 0) {
-            // Для актуаторов site берется только из WebSocket, не из связанных устройств
-            // Зачем: Обеспечиваем приоритет данных из WebSocket над статистическим резолвом
-            // Убрана автоматическая установка site из связанного устройства
-            
-            // Инвалидируем кэш информации об актуаторе, чтобы обновить список каналов с новым linkedDevice
-            this.cache.deviceInfoByDeviceId.delete(actuator.id);
-            this.cache.deviceInfo = null;
-            this.cache.deviceInfoHash = null;
-            
-            // Обновляем отображение, если актуатор выбран
-            if (this.selectedIndex >= 0 && this.selectedIndex < this.devices.length && this.devices[this.selectedIndex]?.id === actuator.id) {
-              this.updateDeviceInfo();
-              this.scheduleRender();
-            }
-          }
-        }
+      // Инициализируем состояние, если оно пришло вместе с метаданными
+      if (payload.state) {
+        this.deviceStates.set(deviceId, {
+          state: payload.state,
+          timestamp: Date.now()
+        });
       }
       
+      console.log(`[DEBUG] Добавлено новое устройство: ${device.name} (${deviceId})`);
+      
+      // Резолвим помещения для актуаторов по их каналам после добавления устройства
       // Обновляем каналы всех актуаторов (включая MIX), которые могут быть связаны с этим устройством
-      // Это нужно для случаев, когда устройство добавляется после начальной загрузки
       for (const actuator of this.allDevices) {
         if (actuator.category === 'Актуатор' && typeof actuator.type === 'number') {
           const channels = this.getActuatorChannels(actuator.id, actuator.type);
@@ -5639,16 +5333,13 @@ class TerminalKitStatusDisplay {
           }
         }
       }
-      
-      // Инвалидируем кэш фильтров (будет пересобран при вызове applyFilters())
+
+      // Инвалидируем кэш фильтров
       this.cache.filteredDevices = null;
       this.cache.filteredDevicesHash = null;
       
-      // Переприменяем фильтры после добавления устройства
-      // ВАЖНО: не пересобираем список во время скролла — иначе визуально «пропадают» устройства
+      // Переприменяем фильтры и пересобираем строки фильтров
       this.scheduleUiRebuild({ reapplyFilters: true, rebuildFilterRows: true });
-    } else {
-      console.log(`[DEBUG] Устройство ${deviceId} не было создано, тип: ${deviceType}, payload:`, JSON.stringify(payload).substring(0, 200));
     }
   }
   
