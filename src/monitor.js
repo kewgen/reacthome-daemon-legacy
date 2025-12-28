@@ -1020,14 +1020,23 @@ function getDeviceCategory(type) {
   if (SHIELD_CONTROL_TYPES.includes(type)) return 'Панель';
   if (ENDPOINT_DEVICE_TYPES.includes(type)) return 'Потребитель';
   
-  // Обработка строковых типов сенсоров
-  if (SENSOR_STRING_TYPES.includes(type)) return 'Сенсор';
-  
-  // Обработка потребителей (строковые типы)
-  if (typeof type === 'string' && CONSUMER_TYPES.includes(type)) return 'Потребитель';
-  
-  // Обработка интеграций (внешнее оборудование)
-  if (INTEGRATION_TYPES.includes(type)) return 'Интеграция';
+  if (typeof type === 'string') {
+    // Обработка строковых типов сенсоров
+    if (SENSOR_STRING_TYPES.includes(type)) return 'Сенсор';
+    
+    // Обработка интеграций (внешнее оборудование)
+    if (INTEGRATION_TYPES.includes(type)) return 'Интеграция';
+    
+    // Служебные сущности (не устройства)
+    if (type === 'site' || type === 'SITE' || type === 'project' || type === 'PROJECT') return 'Другое';
+    if (type === 'daemon' || type === 'DAEMON') return 'Другое';
+    
+    // Обработка потребителей:
+    // - типовые CONSUMER_TYPES
+    // - и любые "прочие" строковые типы, которые не являются сенсорами/интеграциями/служебными
+    // Зачем: чтобы в фильтрах работал пункт "Другие" и отображались оставшиеся потребители
+    return 'Потребитель';
+  }
   
   return 'Другое';
 }
