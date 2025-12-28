@@ -23,6 +23,11 @@ let isShuttingDown = false;
 let currentLogFile = null;
 let siteNameCache = new Map(); // Кеш для getSiteName
 const CACHE_TTL = 60000; // TTL кеша 1 минута
+// Зачем: дефолтное значение project настраивается через переменную окружения для разных демонов
+// ВАЖНО: читаем при каждом вызове функции, а не при загрузке модуля, чтобы переменная окружения всегда актуальна
+const getProjectDefault = () => {
+  return process.env.PROJECT_DEFAULT || 'pochta';
+};
 
 // Проверка доступного места на диске (упрощённая версия для Pi)
 const checkDiskSpace = async () => {
@@ -495,8 +500,8 @@ const getProjectName = (id, maxDepth = 10, visited = new Set()) => {
   }
   
   if (visited.has(id) || maxDepth <= 0) {
-    // Если достигли лимита глубины или циклическая ссылка, возвращаем дефолтный проект 'pochta'
-    const result = 'pochta';
+    // Если достигли лимита глубины или циклическая ссылка, возвращаем дефолтный проект
+    const result = getProjectDefault();
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
@@ -504,15 +509,15 @@ const getProjectName = (id, maxDepth = 10, visited = new Set()) => {
   
   const current = state.get(id);
   if (!current || typeof current !== 'object') {
-    // Если объект не найден, возвращаем дефолтный проект 'pochta'
-    const result = 'pochta';
+    // Если объект не найден, возвращаем дефолтный проект
+    const result = getProjectDefault();
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
   
   // Проверить, является ли текущий элемент проектом (Project)
   if (current.type === 'PROJECT') {
-    const result = current.title || current.code || 'pochta';
+    const result = current.title || current.code || getProjectDefault();
     siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
     return result;
   }
@@ -538,9 +543,8 @@ const getProjectName = (id, maxDepth = 10, visited = new Set()) => {
     }
   }
   
-  // Если проект не найден в иерархии, возвращаем дефолтный проект 'pochta'
-  // Это сервер pochta, поэтому по умолчанию используем 'pochta'
-  const result = 'pochta';
+  // Если проект не найден в иерархии, возвращаем дефолтный проект
+  const result = getProjectDefault();
   siteNameCache.set(cacheKey, { value: result, timestamp: Date.now() });
   return result;
 };
@@ -959,7 +963,7 @@ const logDaemonRestart = (reason, details = {}) => {
         remote_ip: null
       },
       site: null,
-      project: 'pochta',
+      project: getProjectDefault(),
       extra: restartDetails
     };
     

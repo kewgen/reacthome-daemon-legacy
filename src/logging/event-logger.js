@@ -50,6 +50,8 @@ const CONSUMER_TYPES = [
 
 // Конфигурация
 const DAEMON_WS_URL = process.env.DAEMON_WS_URL || 'ws://localhost:3000';
+// Зачем: протокол 'listen' требуется для подключения к внешнему шлюзу через wss://gate.reacthome.net
+const WS_PROTOCOL = process.env.WS_PROTOCOL || (DAEMON_WS_URL.startsWith('wss://gate.reacthome.net') ? 'listen' : undefined);
 const RECONNECT_DELAY = 5000; // 5 секунд
 const MAX_RECONNECT_ATTEMPTS = 10;
 const STATE_REQUEST_TIMEOUT = 30000; // 30 секунд
@@ -3301,9 +3303,10 @@ const connect = () => {
     return; // Уже подключено
   }
   
-  log(`Подключение к ${DAEMON_WS_URL}...`);
+  log(`Подключение к ${DAEMON_WS_URL}${WS_PROTOCOL ? ` с протоколом '${WS_PROTOCOL}'` : ''}...`);
   
-  ws = new WebSocket(DAEMON_WS_URL);
+  // Зачем: протокол 'listen' требуется для внешнего шлюза, локальные подключения работают без протокола
+  ws = WS_PROTOCOL ? new WebSocket(DAEMON_WS_URL, WS_PROTOCOL) : new WebSocket(DAEMON_WS_URL);
   
   // Зачем: Таймаут подключения к WebSocket (10 секунд)
   connectionTimeoutId = setTimeout(() => {
