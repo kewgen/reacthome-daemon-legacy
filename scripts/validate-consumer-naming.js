@@ -430,7 +430,25 @@ function kindBySensorType(type) {
   return canonicalKind(type).slice(0, 12) || null;
 }
 
-function computeExpected({ id, payload, roomById, localToGlobalMap }) {
+// Зачем: извлекаем номер группы из кода устройства реле (например из "1.R2.L.1" извлекаем "R2")
+// Также поддерживаем простое имя реле типа "R2" (без полного кода)
+function extractActuatorGroupFromCode(deviceCode) {
+  if (!deviceCode) return null;
+  const canonCode = canonicalizeMachineText(deviceCode);
+  // Ищем формат ROOM.ACT.KIND.CH или ROOM.ACT.KINDCH
+  const m = canonCode.match(/^\s*\d{1,3}\.([A-Z][0-9]*)\./);
+  if (m && m[1]) {
+    return m[1]; // Возвращаем ACT с номером группы (например "R2", "R3")
+  }
+  // Зачем: если код реле - это просто имя типа "R2" (без полного кода), извлекаем номер группы напрямую
+  const simpleNameMatch = canonCode.match(/^\s*([A-Z][0-9]+)\s*$/);
+  if (simpleNameMatch && simpleNameMatch[1]) {
+    return simpleNameMatch[1]; // Возвращаем имя реле с номером группы (например "R2", "R3")
+  }
+  return null;
+}
+
+function computeExpected({ id, payload, roomById, localToGlobalMap, payloadById }) {
   const code = normalizeText(payload.code);
   const title = normalizeText(payload.title);
   const type = safeStr(payload.type);
@@ -493,7 +511,27 @@ function computeExpected({ id, payload, roomById, localToGlobalMap }) {
       const actBase = bindInfo.actBase; // D/R
       act = actBase;
     } else if (bindInfo.kind === 'group') {
-      act = bindInfo.actBase; // R (режим group)
+      // Зачем: для групп всегда используем номер группы из кода устройства реле (например R2, R3)
+      // Имя реле определяет номер группы в спецификации (например реле R2 → код 1.R2.C.1)
+      if (bindInfo.baseId && payloadById) {
+        const relayPayload = payloadById.get(bindInfo.baseId);
+        if (relayPayload) {
+          const relayCode = normalizeText(relayPayload.code);
+          const actuatorGroup = extractActuatorGroupFromCode(relayCode);
+          if (actuatorGroup) {
+            act = actuatorGroup; // Используем номер группы из кода реле (например "R2")
+          } else {
+            // Зачем: если в реле нет номера группы, используем ACT из текущего кода или fallback
+            act = startSpecCode?.act || bindInfo.actBase;
+          }
+        } else {
+          // Зачем: если реле не найдено, используем ACT из текущего кода или fallback
+          act = startSpecCode?.act || bindInfo.actBase;
+        }
+      } else {
+        // Зачем: если нет baseId или payloadById, используем ACT из текущего кода или fallback
+        act = startSpecCode?.act || bindInfo.actBase;
+      }
     } else if (startSpecCode?.act) {
       act = startSpecCode.act;
     } else if (startSpecTitle?.act) {
@@ -534,7 +572,8 @@ function computeExpected({ id, payload, roomById, localToGlobalMap }) {
       expectedCh = localCh;
     }
 
-    act = act ? canonicalizeMachineText(act).replace(/[^A-Z]/g, '').slice(0, 2) : null;
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    act = act ? canonicalizeMachineText(act).replace(/[^A-Z0-9]/g, '') : null;
     expectedPrefix = buildExpectedPrefix({ room, act, kind, ch: expectedCh });
   }
 
@@ -788,7 +827,7 @@ async function main() {
     for (const [id, payload] of payloadById.entries()) {
       if (!isValidatedPayload(payload)) continue;
 
-      const exp = computeExpected({ id, payload, roomById, localToGlobalMap });
+      const exp = computeExpected({ id, payload, roomById, localToGlobalMap, payloadById });
       const verdict = classify({ currentCode: exp.code, currentTitle: exp.title, expectedPrefix: exp.expectedPrefix });
       const roomName = Number.isFinite(exp.room) ? (roomNameByRoom.get(exp.room) || null) : null;
 

@@ -15,6 +15,7 @@
 - `COMMIT_PLAN.md` — что включать в коммит для локального запуска, что исключать.
 - `REVERT_INSTRUCTIONS.md` — варианты отката изменений.
 - `PM2_LOCAL_MONITORING.md` — локальный мониторинг через PM2.
+- `DEVICE_NAMING_SPEC.md` — спецификация нейминга устройств (формат `ROOM.ACT.KIND.CH`, пример: `6.D.L.3 Лоджия`).
 - `CPU_PROFILING_GUIDE.md` — профилирование CPU на малинке.
 - `MEMORY_LEAK_DETECTION.md` — (черновик) как собирать данные по утечкам памяти.
 - `MONITOR_PI_QUICK_CHECK.md` — (черновик) быстрая проверка состояния малинки.
