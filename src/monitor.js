@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.64 (ручное управление версией)
+ * Версия: 1.0.65 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.64';
+const VERSION = '1.0.65';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -5165,7 +5165,7 @@ class TerminalKitStatusDisplay {
     // Проверяем изменения состояния по ключевым полям
     let stateChanged = false;
     if (existing && existing.state) {
-      const keyFields = ['ready', 'ip', 'co2', 'temperature', 'humidity', 'illumination', 'value'];
+      const keyFields = ['ready', 'ip', 'co2', 'temperature', 'humidity', 'illumination', 'value', 'code', 'title'];
       for (const field of keyFields) {
         if (oldState[field] !== mergedState[field]) {
           stateChanged = true;
@@ -5186,32 +5186,59 @@ class TerminalKitStatusDisplay {
       lastStateChange: lastStateChange,
     });
     
-    // Обновляем site устройства из payload, если он изменился
+    // Обновляем метаданные устройства (name, code, title, site) из payload, если они изменились
     const existingDevice = this.allDevices.find(d => d.id === deviceId);
-    if (existingDevice && newState.site !== undefined) {
-      let siteId = newState.site;
-      let siteName = null;
+    if (existingDevice) {
+      let metadataChanged = false;
       
-      if (siteId) {
-        if (Array.isArray(siteId)) {
-          siteId = siteId[0];
+      // Обновляем site
+      if (newState.site !== undefined) {
+        let siteId = newState.site;
+        let siteName = null;
+        
+        if (siteId) {
+          if (Array.isArray(siteId)) {
+            siteId = siteId[0];
+          }
+          if (typeof siteId === 'string') {
+            const site = this.sites.find(s => s.id === siteId);
+            siteName = site ? site.name : null;
+          }
         }
-        if (typeof siteId === 'string') {
-          const site = this.sites.find(s => s.id === siteId);
-          siteName = site ? site.name : null;
+        
+        if (existingDevice.site !== siteName) {
+          existingDevice.siteId = siteId || null;
+          existingDevice.site = siteName;
+          metadataChanged = true;
         }
       }
-      
-      const oldSite = existingDevice.site;
-      if (oldSite !== siteName) {
-        existingDevice.siteId = siteId || null;
-        existingDevice.site = siteName;
+
+      // Зачем: Обновляем code и title, если они пришли в payload. 
+      // Это позволяет динамически изменять названия устройств в мониторе без перезагрузки.
+      if (newState.code !== undefined && existingDevice.code !== newState.code) {
+        existingDevice.code = newState.code;
+        metadataChanged = true;
+      }
+      if (newState.title !== undefined && existingDevice.title !== newState.title) {
+        existingDevice.title = newState.title;
+        metadataChanged = true;
+      }
+      if (newState.name !== undefined && existingDevice.nameField !== newState.name) {
+        existingDevice.nameField = newState.name;
+        metadataChanged = true;
+      }
+
+      if (metadataChanged) {
+        // Пересчитываем отображаемое имя
+        // Используем mergedState (payload), так как там самые свежие данные
+        existingDevice.name = getDeviceName(mergedState);
         
-        // Инвалидируем кэш фильтров, если site изменился
-        // НЕ вызываем applyFilters() здесь, чтобы не ломать навигацию во время скроллинга
-        // Фильтры будут применены при следующем явном изменении фильтра пользователем
+        // Инвалидируем кэш фильтров и таблицы
         this.cache.filteredDevices = null;
         this.cache.filteredDevicesHash = null;
+        this.cache.tableData = null;
+        this.cache.tableDataHash = null;
+        stateChanged = true; // Триггерим перерисовку
       }
     }
     
