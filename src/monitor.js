@@ -1020,22 +1020,11 @@ function getDeviceCategory(type) {
   if (SHIELD_CONTROL_TYPES.includes(type)) return 'Панель';
   if (ENDPOINT_DEVICE_TYPES.includes(type)) return 'Потребитель';
   
+  // Строгая классификация строковых типов
   if (typeof type === 'string') {
-    // Обработка строковых типов сенсоров
     if (SENSOR_STRING_TYPES.includes(type)) return 'Сенсор';
-    
-    // Обработка интеграций (внешнее оборудование)
     if (INTEGRATION_TYPES.includes(type)) return 'Интеграция';
-    
-    // Служебные сущности (не устройства)
-    if (type === 'site' || type === 'SITE' || type === 'project' || type === 'PROJECT') return 'Другое';
-    if (type === 'daemon' || type === 'DAEMON') return 'Другое';
-    
-    // Обработка потребителей:
-    // - типовые CONSUMER_TYPES
-    // - и любые "прочие" строковые типы, которые не являются сенсорами/интеграциями/служебными
-    // Зачем: чтобы в фильтрах работал пункт "Другие" и отображались оставшиеся потребители
-    return 'Потребитель';
+    if (CONSUMER_TYPES.includes(type)) return 'Потребитель';
   }
   
   return 'Другое';
@@ -2194,9 +2183,13 @@ class TerminalKitStatusDisplay {
         warm_floor: 'warm_floor', AC: 'AC', FAN: 'FAN', BOILER: 'BOILER', PUMP: 'PUMP',
         thermostat: 'thermostat', hygrostat: 'hygrostat', co2_stat: 'co2_stat',
       };
-      // Показываем "типовые" потребители отдельно (строковые типы из CONSUMER_TYPES)
+      // Показываем "типовые" фильтры как подмножество строгого списка CONSUMER_TYPES.
+      // Остальные потребители попадут под чекбокс "Другие".
+      const typicalFilterTypes = new Set(
+        Object.keys(consumerNames).filter(t => CONSUMER_TYPES.includes(t))
+      );
       const typicalTypes = consumerTypes
-        .filter(type => typeof type === 'string' && CONSUMER_TYPES.includes(type))
+        .filter(type => typeof type === 'string' && typicalFilterTypes.has(type))
         .sort((a, b) => a.localeCompare(b));
 
       typicalTypes.forEach(type => {
@@ -2209,8 +2202,15 @@ class TerminalKitStatusDisplay {
         });
       });
 
-      // "Другие" — все оставшиеся типы потребителей (включая числовые endpoint-типы и неизвестные строки)
-      const hasOtherConsumers = consumerTypes.some(type => !(typeof type === 'string' && CONSUMER_TYPES.includes(type)));
+      // "Другие" — оставшиеся потребители (строгие CONSUMER_TYPES вне typicalFilterTypes + числовые endpoint-типы)
+      const hasOtherConsumers = consumerTypes.some(type => {
+        if (typeof type === 'string') {
+          // Строгий список: если тип не в CONSUMER_TYPES — это не потребитель и сюда не попадёт по category
+          return CONSUMER_TYPES.includes(type) && !typicalFilterTypes.has(type);
+        }
+        // Числовые endpoint-типы (например SMART_*), которые мы относим к потребителям
+        return typeof type === 'number';
+      });
       if (hasOtherConsumers) {
         const isOtherChecked = !!this.activeFilters.consumerOther;
         addRow({
@@ -2354,9 +2354,24 @@ class TerminalKitStatusDisplay {
           return false;
         }
 
-        const isTypical = (typeof device.type === 'string' && CONSUMER_TYPES.includes(device.type));
-        const matchesTypical = isTypical && this.activeFilters.consumerType.includes(device.type);
-        const matchesOther = !isTypical && this.activeFilters.consumerOther;
+        // Типовые фильтры — подмножество строгого списка потребителей (см. buildFilterRows)
+        const typicalFilterTypes = new Set([
+          'light_220', 'light_LED', 'light_RGB', 'light_led',
+          'socket_220', 'valve_heating', 'valve_water',
+          'warm_floor', 'AC', 'FAN', 'BOILER', 'PUMP',
+        ]);
+
+        const isTypicalFilterType = (typeof device.type === 'string' && typicalFilterTypes.has(device.type));
+        const isStrictConsumerString = (typeof device.type === 'string' && CONSUMER_TYPES.includes(device.type));
+        const isNumericConsumer = (typeof device.type === 'number');
+
+        const matchesTypical = isTypicalFilterType && this.activeFilters.consumerType.includes(device.type);
+        const matchesOther =
+          this.activeFilters.consumerOther &&
+          (
+            (isStrictConsumerString && !isTypicalFilterType) ||
+            isNumericConsumer
+          );
 
         if (!matchesTypical && !matchesOther) {
           return false;
