@@ -666,7 +666,8 @@ const getWebSocketUri = () => {
     return process.env.REACTHOME_WS_URI;
   }
   // 3. Дефолтное значение
-  return 'ws://localhost:3000';
+  // Используем внешний защищённый gateway (wss://). Локальные ws://localhost запрещены.
+  return process.env.REACTHOME_GATE_URL || 'wss://gate.reacthome.net';
 };
 
 const WS_URI = getWebSocketUri(); // По умолчанию подключаемся к локальному WebSocket серверу
@@ -989,6 +990,9 @@ const CONSUMER_TYPES = [
   'curtains', 'curtain', 'blind', 'blinds', 'roller', // Шторы, жалюзи, роллеты - потребители
   'multiroom', // Мультирум аудио - потребитель
   'NOVA', // Приточная вентиляция - перенесена из интеграций
+  // Важно: по договоренности считаем эти типы потребителями (должны быть видны в "Потребители → Другие")
+  'INTESIS_BOX',
+  'MODBUS',
 ];
 
 // Типы сенсоров (строковые)
@@ -1002,8 +1006,7 @@ const SENSOR_STRING_TYPES = [
 
 // Типы интеграций с внешним оборудованием (строковые физические устройства)
 const INTEGRATION_TYPES = [
-  'INTESIS_BOX', // Intesis AC контроллеры (интеграция с кондиционерами)
-  'MODBUS', // Modbus устройства (протокол связи)
+  // ВАЖНО: INTESIS_BOX и MODBUS перенесены в CONSUMER_TYPES по договоренности (показываем как потребителей)
 ];
 
 // Типы ACTION_* которые являются действиями в скриптах, а не устройствами
@@ -2181,6 +2184,9 @@ class TerminalKitStatusDisplay {
         light_220: 'light_220', light_LED: 'light_LED', light_RGB: 'light_RGB', light_led: 'light_led',
         socket_220: 'socket_220', valve_heating: 'valve_heating', valve_water: 'valve_water',
         warm_floor: 'warm_floor', AC: 'AC', FAN: 'FAN', BOILER: 'BOILER', PUMP: 'PUMP',
+        curtains: 'CURTAINS', curtain: 'CURTAINS',
+        multiroom: 'MULTIROOM',
+        fan: 'FAN',
         thermostat: 'thermostat', hygrostat: 'hygrostat', co2_stat: 'co2_stat',
       };
       // Показываем "типовые" фильтры как подмножество строгого списка CONSUMER_TYPES.
@@ -2359,6 +2365,9 @@ class TerminalKitStatusDisplay {
           'light_220', 'light_LED', 'light_RGB', 'light_led',
           'socket_220', 'valve_heating', 'valve_water',
           'warm_floor', 'AC', 'FAN', 'BOILER', 'PUMP',
+          'curtains', 'curtain',
+          'multiroom',
+          'fan',
         ]);
 
         const isTypicalFilterType = (typeof device.type === 'string' && typicalFilterTypes.has(device.type));
