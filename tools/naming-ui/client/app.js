@@ -147,6 +147,75 @@ function escapeHtml(text) {
   }
   await loadDaemons();
 
+  // Зачем: функция нормализации текста (доступна везде в модуле)
+  function normalizeText(v){ return String(v || '').replace(/\s+/g,' ').trim(); }
+
+  // Зачем: функция пересчёта статуса строки на основе текущего code и expectedCode
+  // Использует переданный объект row напрямую (UUID не меняется, обновляется только статус)
+  function recalculateRowStatus(row, tr, dot) {
+    const codeRaw = normalizeText(row.code || '');
+    const titleRaw = normalizeText(row.title || '');
+    const expectedCode = normalizeText(row.expectedCode || '');
+    const expectedPrefix = normalizeText(row.expectedPrefix || '');
+    
+    let newLevel = 'red';
+    let newReason = 'префикс не найден';
+    
+    // Зачем: главная проверка - если code и title полностью совпадают с предлагаемыми, статус зелёный
+    if (expectedCode && codeRaw === expectedCode) {
+      // Зачем: проверяем, что title не содержит код классификации
+      const titleCodeRe = /^\s*\d{1,3}\.[A-Za-zА-Яа-я0-9]{1,2}\.[A-Za-zА-Яа-я0-9]{1,12}\.?\d{0,3}\s*/i;
+      const titleWithoutCode = titleRaw.replace(titleCodeRe, '').trim();
+      if (titleRaw === titleWithoutCode) {
+        newLevel = 'green';
+        newReason = 'code и title полностью совпадают с предлагаемыми';
+      }
+    } else if (expectedCode && (codeRaw === '' || codeRaw === '—')) {
+      // Зачем: если code пустой, но expectedCode есть, это жёлтый (требуется применение)
+      newLevel = 'yellow';
+      newReason = 'code пустой, требуется применение предлагаемого кода';
+    } else if (expectedPrefix && codeRaw.startsWith(expectedPrefix)) {
+      // Зачем: если code начинается с префикса, проверяем каноничность
+      if (codeRaw.startsWith(expectedPrefix) && !/[А-Яа-я]/.test(codeRaw.slice(0, expectedPrefix.length + 2))) {
+        newLevel = 'green';
+        newReason = 'code начинается с префикса (канон)';
+      } else {
+        newLevel = 'yellow';
+        newReason = 'префикс в начале, но не канон';
+      }
+    } else if (expectedPrefix && (codeRaw.includes(expectedPrefix) || titleRaw.includes(expectedPrefix))) {
+      newLevel = 'yellow';
+      newReason = 'префикс найден не в начале code или в title';
+    }
+    
+    // Обновляем статус строки
+    tr.dataset.level = newLevel;
+    dot.style.background = newLevel === 'red' ? '#ef4444' : newLevel === 'yellow' ? '#fbbf24' : '#10b981';
+    dot.title = (newLevel === 'red' ? '🔴' : newLevel === 'yellow' ? '🟡' : '🟢') + ' ' + newReason;
+    
+    return newLevel;
+  }
+
+  // Зачем: функция пересчёта счётчика на основе видимых строк в таблице
+  function updateSummary() {
+    const trs = rowsEl.querySelectorAll('tr');
+    let total = 0, green = 0, yellow = 0, red = 0;
+    trs.forEach(tr => {
+      const level = tr.dataset.level || 'unknown';
+      // Зачем: проверяем видимость строки более надёжным способом
+      const computedStyle = window.getComputedStyle(tr);
+      const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden';
+      if (isVisible) {
+        total++;
+        // Зачем: учитываем только известные уровни, игнорируем 'unknown'
+        if (level === 'green') green++;
+        else if (level === 'yellow') yellow++;
+        else if (level === 'red') red++;
+      }
+    });
+    summary.textContent = `Найдено ${total} потребителей — 🟢 ${green} 🟡 ${yellow} 🔴 ${red}`;
+  }
+
   validateBtn.addEventListener('click', async () => {
     const daemonId = daemonSel.value;
     const gate = gateEl.value;
@@ -155,9 +224,7 @@ function escapeHtml(text) {
     const res = await fetchJson('/api/validate', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ daemonId, gateUrl: gate }) });
     if (!res.ok) { summary.textContent = 'Ошибка: ' + (res.error || 'unknown'); return; }
     const data = res.result;
-    summary.textContent = `Найдено ${data.total || 0} потребителей — 🟢 ${data.stats.green} 🟡 ${data.stats.yellow} 🔴 ${data.stats.red}`;
     rowsEl.innerHTML = '';
-    function normalizeText(v){ return String(v || '').replace(/\s+/g,' ').trim(); }
 
     function stripTitleClassification(title){
       // Зачем: Title(предлагаемое) заполняем текущим title без кода классификации в начале строки.
@@ -190,17 +257,32 @@ function escapeHtml(text) {
       
       // Извлекаем site из expectedCode (последняя часть после префикса)
       // Формат: ROOM.ACT.KIND.CH [site] или ROOM.KIND.CH [site]
+      // Также проверяем нестандартные форматы (например "2.0/10.Valve.4 Старшая")
       const specPrefixRe4 = /^\s*\d{1,3}\.[A-Z][A-Z0-9]{0,2}\.[A-Z0-9]{1,12}\.\d{1,3}\s+(.+)\s*$/;
       const specPrefixRe3 = /^\s*\d{1,3}\.[A-Z0-9]{1,12}\.\d{1,3}\s+(.+)\s*$/;
-      const siteMatch = expectedCode.match(specPrefixRe4) || expectedCode.match(specPrefixRe3);
+      const nonStandardRe = /^\s*\d+[^\s]*\s+(.+)\s*$/;
+      const siteMatch = expectedCode.match(specPrefixRe4) || expectedCode.match(specPrefixRe3) || expectedCode.match(nonStandardRe);
       const site = siteMatch ? normalizeText(siteMatch[1]) : '';
       
-      // Если site уже есть в expectedCode и совпадает с roomName - не добавляем
-      if (site && normalizeText(site) === roomName) {
+      if (site) {
+        // Зачем: проверяем, содержит ли site roomName (после удаления префиксов типа "mr", "vn" и т.д.)
+        // Если site содержит roomName, используем нормализованный roomName вместо site
+        const siteWithoutPrefix = normalizeText(site.replace(/^(mr|vn|led|rgb|l|s220|wf|ao|bra|d|r|c|p|k|hfu|c\/a)\s+/i, ''));
+        const roomNameLower = roomName.toLowerCase();
+        const siteLower = siteWithoutPrefix.toLowerCase();
+        
+        // Если site содержит roomName или roomName содержится в site - используем roomName
+        if (siteLower.includes(roomNameLower) || roomNameLower.includes(siteLower)) {
+          // Заменяем site на roomName в expectedCode
+          const prefix = expectedCode.replace(/\s+.*$/, '');
+          return `${prefix} ${roomName}`;
+        }
+        
+        // Иначе оставляем site как есть
         return expectedCode;
       }
       
-      // Иначе добавляем roomName
+      // Иначе добавляем roomName только если site нет в expectedCode
       return `${expectedCode} ${roomName}`;
     }
 
@@ -287,7 +369,7 @@ function escapeHtml(text) {
           dot.style.background = '#60a5fa';
           
           try {
-            // Apply
+            // Зачем: Apply использует UUID устройства (r.id) напрямую, без резолвинга по имени/code
             const payload = { daemonId, gateUrl: gate, id: r.id };
             if (proposed) payload.newCode = proposed;
             if (newTitleVal !== undefined && newTitleVal !== (r.title || '')) payload.newTitle = newTitleVal;
@@ -300,9 +382,9 @@ function escapeHtml(text) {
             }
             
             // Ждём немного для применения изменений
-            await new Promise((r) => setTimeout(r, 1500));
+            await new Promise((resolve) => setTimeout(resolve, 1500));
             
-            // Verify через GET
+            // Зачем: Verify через GET использует UUID устройства (r.id) напрямую, без резолвинга по имени
             const verifyRes = await fetchJson('/api/verify', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ daemonId, gateUrl: gate, id: r.id })});
             if (!verifyRes.ok) {
               spinner.replaceWith(applyBtn);
@@ -315,18 +397,21 @@ function escapeHtml(text) {
             const actualCode = actualPayload.code || '';
             const actualTitle = actualPayload.title || '';
             
-            // Обновляем данные в объекте r для следующих операций
+            // Зачем: обновляем данные в объекте r (UUID остаётся неизменным, обновляются только code и title)
             r.code = actualCode || r.code;
             r.title = actualTitle || r.title;
             
             // Обновляем UI на основе реального состояния
-            dot.style.background = '#10b981';
             combinedTd.style.opacity = '0.2';
             setTimeout(() => {
               if (actualCode) codeLine.textContent = actualCode;
               if (actualTitle) titleLine.textContent = actualTitle;
               combinedTd.style.opacity = '1';
             }, 220);
+            
+            // Зачем: пересчитываем статус строки на основе нового code и обновляем счётчики
+            recalculateRowStatus(r, tr, dot);
+            updateSummary();
             
             // Возвращаем кнопку
             spinner.replaceWith(applyBtn);
@@ -369,6 +454,11 @@ function escapeHtml(text) {
           row.style.display = (row.dataset.level === f) ? '' : 'none';
         });
       }
+      // Зачем: обновляем счётчик на основе видимых строк после того, как DOM обновится
+      // Используем requestAnimationFrame для гарантии, что все строки добавлены в DOM
+      requestAnimationFrame(() => {
+        updateSummary();
+      });
     } else {
       tbl.hidden = true;
     }
@@ -383,6 +473,8 @@ function escapeHtml(text) {
       if (t.dataset.level === v) t.style.display = '';
       else t.style.display = 'none';
     });
+    // Зачем: обновляем счётчик на основе видимых строк после применения фильтра
+    updateSummary();
   });
 })(); 
 

@@ -89,7 +89,10 @@ app.post('/api/validate', async (req, res) => {
 });
 
   app.post('/api/apply', async (req, res) => {
+  // Зачем: используем UUID устройства (id) напрямую из запроса, без резолвинга по имени/code
+  // id берётся напрямую из req.body и используется в ACTION_SET без преобразований или поиска устройства
   const { daemonId, gateUrl, id, newCode, newTitle } = req.body;
+  // Зачем: проверяем только наличие id, не валидируем формат и не делаем резолвинг
   if (!daemonId || !id) return res.status(400).json({ ok: false, error: 'daemonId and id required' });
   const gate = (gateUrl || process.env.GATE_URL || 'wss://gate.reacthome.net').replace(/\/$/, '');
     // Безопасность: разрешён только внешний wss:// gate (не localhost, не ws://)
@@ -105,13 +108,16 @@ app.post('/api/validate', async (req, res) => {
       const t = setTimeout(() => reject(new Error('timeout connect')), 10000);
       ws.once('open', () => {
         clearTimeout(t);
+        // Зачем: используем UUID устройства (id) напрямую в WebSocket сообщении ACTION_SET, без резолвинга
+        // id берётся напрямую из req.body и передаётся в сообщение без преобразований или поиска устройства
         const msg = {
             type: 'ACTION_SET', // используем верхний регистр, как в бою
-          id,
+          id, // UUID устройства из запроса - используется напрямую, без резолвинга по code/title
             payload: { timestamp: Date.now() }
         };
         if (newCode !== undefined) msg.payload.code = newCode;
         if (newTitle !== undefined) msg.payload.title = newTitle;
+        // Зачем: отправляем ACTION_SET напрямую по UUID устройства, демон сам найдёт устройство по id
         try {
             ws.send(JSON.stringify(msg), (err) => {
               if (err) return reject(err);
@@ -140,6 +146,7 @@ app.post('/api/validate', async (req, res) => {
 
   // Зачем: GET валидация устройства после apply для проверки реального состояния
   app.post('/api/verify', async (req, res) => {
+    // Зачем: используем UUID устройства (id) напрямую из запроса, без резолвинга по имени/code
     const { daemonId, gateUrl, id } = req.body;
     if (!daemonId || !id) return res.status(400).json({ ok: false, error: 'daemonId and id required' });
     const gate = (gateUrl || process.env.GATE_URL || 'wss://gate.reacthome.net').replace(/\/$/, '');
@@ -154,10 +161,12 @@ app.post('/api/validate', async (req, res) => {
         const t = setTimeout(() => reject(new Error('timeout connect')), 10000);
         ws.once('open', () => {
           clearTimeout(t);
+          // Зачем: используем UUID устройства (id) напрямую в запросе состояния, без резолвинга
           ws.send(JSON.stringify({ type: 'get', state: [id] }));
         });
         ws.on('message', (data) => {
           const msg = JSON.parse(data.toString());
+          // Зачем: проверяем совпадение UUID устройства напрямую, без резолвинга
           if (msg.type === 'ACTION_SET' && msg.id === id && msg.payload) {
             ws.close();
             const code = msg.payload.code || '';

@@ -492,6 +492,11 @@ function computeExpected({ id, payload, roomById, localToGlobalMap, payloadById 
       expectedCh = localCh;
     }
     
+    // Зачем: если ch всё ещё не определён, но room и kind есть, используем 1 как fallback для сенсоров без bind
+    if (!Number.isFinite(expectedCh) && Number.isFinite(room) && kind) {
+      expectedCh = 1;
+    }
+    
     expectedPrefix = buildExpectedSensorPrefix({ room, kind, ch: expectedCh });
   } else {
     // KIND: либо явно из префикса, либо по текущим названиям.
@@ -598,9 +603,19 @@ function computeExpected({ id, payload, roomById, localToGlobalMap, payloadById 
       // Fallback: используем канонизированный site
       site = normalizeText(siteMatch[1]);
     }
-  } else if (code && !/[0-9]+\.[A-Z]\./.test(canonCode) && !code.includes('.')) {
-    // Зачем: если code просто "Лоджия", используем это как site-кандидат.
-    site = code;
+  } else {
+    // Зачем: для нестандартных форматов кода (например "2.0/10.Valve.4 Старшая") извлекаем site после последнего числа
+    // Ищем паттерн: число, затем любые символы до пробела, затем пробел и site
+    const nonStandardSiteMatch = code.match(/^\s*\d+[^\s]*\s+(.+)\s*$/);
+    if (nonStandardSiteMatch && nonStandardSiteMatch[1]) {
+      site = normalizeText(nonStandardSiteMatch[1]);
+    } else if (code && !/[0-9]+\.[A-Z]\./.test(canonCode) && !code.includes('.')) {
+      // Зачем: если code просто "Лоджия" или "mr лоджия", удаляем префиксы типа "mr", "vn" и т.д. перед использованием как site
+      // Префиксы: mr, vn, led, rgb, l, s220, wf, ao, bra, d, r, c, p, k, hfu, c/a
+      const codeWithoutPrefix = normalizeText(code.replace(/^(mr|vn|led|rgb|l|s220|wf|ao|bra|d|r|c|p|k|hfu|c\/a)\s+/i, ''));
+      // Используем код без префикса как site, если он не пустой
+      site = codeWithoutPrefix || code;
+    }
   }
 
   const expectedCode = expectedPrefix ? `${expectedPrefix}${site ? ` ${site}` : ''}` : null;
@@ -624,12 +639,67 @@ function computeExpected({ id, payload, roomById, localToGlobalMap, payloadById 
   };
 }
 
-function classify({ currentCode, currentTitle, expectedPrefix }) {
+function classify({ currentCode, currentTitle, expectedPrefix, expectedCode }) {
   const codeRaw = normalizeText(currentCode);
   const titleRaw = normalizeText(currentTitle);
   const code = canonicalizeMachineText(codeRaw);
   const title = canonicalizeMachineText(titleRaw);
-  if (!expectedPrefix) return { level: 'red', icon: '🔴', reason: 'не удалось вычислить префикс' };
+  
+  // Зачем: главная проверка - если оригинальные code и title полностью совпадают с предлагаемыми, статус зелёный
+  if (expectedCode) {
+    const expectedCodeNormalized = normalizeText(expectedCode);
+    // Зачем: если code полностью совпадает с предлагаемым, проверяем title
+    if (codeRaw === expectedCodeNormalized) {
+      // Зачем: предлагаемый title - это title без кода классификации в начале (используем ту же логику, что и в клиенте)
+      const titleCodeRe = new RegExp(
+        '^\\s*' +
+        '(?:' +
+          // ROOM.ACT.KIND.CH (ACT 1..2 символа, KIND 1..12)
+          '\\d{1,3}\\.[A-Za-z]{1,2}\\.[A-Za-zА-Яа-я0-9]{1,12}\\.\\d{1,3}' + '|' +
+          // ROOM.ACT.KINDCH (легаси слитый CH)
+          '\\d{1,3}\\.[A-Za-z]{1,2}\\.[A-Za-zА-Яа-я0-9]{1,12}\\d{1,3}' + '|' +
+          // ROOM.KIND.CH (сенсоры/легаси)
+          '\\d{1,3}\\.[A-Za-zА-Яа-я0-9]{1,12}\\.\\d{1,3}' +
+        ')' +
+        '\\s*',
+        'i'
+      );
+      const titleWithoutCode = titleRaw.replace(titleCodeRe, '').trim();
+      // Зачем: если title уже не содержит код (или пустой), значит он совпадает с предлагаемым
+      if (titleRaw === titleWithoutCode) {
+        return { level: 'green', icon: '🟢', reason: 'code и title полностью совпадают с предлагаемыми' };
+      }
+    }
+    // Зачем: если code пустой, но expectedCode есть и title правильный, это жёлтый (требуется применение)
+    if ((codeRaw === '' || codeRaw === '—') && expectedCodeNormalized) {
+      const titleCodeRe = new RegExp(
+        '^\\s*' +
+        '(?:' +
+          '\\d{1,3}\\.[A-Za-z]{1,2}\\.[A-Za-zА-Яа-я0-9]{1,12}\\.\\d{1,3}' + '|' +
+          '\\d{1,3}\\.[A-Za-z]{1,2}\\.[A-Za-zА-Яа-я0-9]{1,12}\\d{1,3}' + '|' +
+          '\\d{1,3}\\.[A-Za-zА-Яа-я0-9]{1,12}\\.\\d{1,3}' +
+        ')' +
+        '\\s*',
+        'i'
+      );
+      const titleWithoutCode = titleRaw.replace(titleCodeRe, '').trim();
+      if (titleRaw === titleWithoutCode) {
+        return { level: 'yellow', icon: '🟡', reason: 'code пустой, требуется применение предлагаемого кода' };
+      }
+    }
+  }
+  
+  // Зачем: если expectedPrefix отсутствует, но expectedCode есть, проверяем совпадение с expectedCode
+  if (!expectedPrefix) {
+    if (expectedCode) {
+      const expectedCodeNormalized = normalizeText(expectedCode);
+      // Зачем: если code совпадает с expectedCode, то зелёный (даже если префикс не вычислен)
+      if (codeRaw === expectedCodeNormalized) {
+        return { level: 'green', icon: '🟢', reason: 'code совпадает с предлагаемым (префикс не вычислен)' };
+      }
+    }
+    return { level: 'red', icon: '🔴', reason: 'не удалось вычислить префикс' };
+  }
 
   const parts = expectedPrefix.split('.');
   const compactExpected =
@@ -828,7 +898,7 @@ async function main() {
       if (!isValidatedPayload(payload)) continue;
 
       const exp = computeExpected({ id, payload, roomById, localToGlobalMap, payloadById });
-      const verdict = classify({ currentCode: exp.code, currentTitle: exp.title, expectedPrefix: exp.expectedPrefix });
+      const verdict = classify({ currentCode: exp.code, currentTitle: exp.title, expectedPrefix: exp.expectedPrefix, expectedCode: exp.expectedCode });
       const roomName = Number.isFinite(exp.room) ? (roomNameByRoom.get(exp.room) || null) : null;
 
       rows.push({
