@@ -264,6 +264,7 @@ function escapeHtml(text) {
 
         const expectedTd = document.createElement('td');
         expectedTd.textContent = buildProposedCode(r) || '—';
+        expectedTd.style.textAlign = 'right'; // Зачем: выравнивание по правому краю для лучшей читаемости кодов
         const actTd = document.createElement('td');
         const applyBtn = document.createElement('button');
         applyBtn.textContent = 'Применить';
