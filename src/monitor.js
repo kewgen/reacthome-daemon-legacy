@@ -666,8 +666,7 @@ const getWebSocketUri = () => {
     return process.env.REACTHOME_WS_URI;
   }
   // 3. Дефолтное значение
-  // Используем внешний защищённый gateway (wss://). Локальные ws://localhost запрещены.
-  return process.env.REACTHOME_GATE_URL || 'wss://gate.reacthome.net';
+  return 'ws://localhost:3000';
 };
 
 const WS_URI = getWebSocketUri(); // По умолчанию подключаемся к локальному WebSocket серверу
@@ -1017,6 +1016,11 @@ const ACTION_TYPES = [
   'ACTION_SCRIPT_RUN', 'ACTION_TIMER_START', 'ACTION_TIMER_STOP',
 ];
 
+// Зачем: Любой тип вида ACTION_* — это "скрипт/действие", а не устройство. Их нельзя отображать в списке устройств.
+function isActionScriptType(type) {
+  return typeof type === 'string' && type.startsWith('ACTION_');
+}
+
 function getDeviceCategory(type) {
   if (SHIELD_ACTUATOR_TYPES.includes(type)) return 'Актуатор';
   if (SHIELD_SENSOR_TYPES.includes(type)) return 'Сенсор';
@@ -1134,6 +1138,11 @@ function createDeviceObject(deviceId, payload, siteMap, sites) {
   if (!payload || !payload.type) return null;
 
   const deviceType = payload.type;
+
+  // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
+  if (isActionScriptType(deviceType) || (typeof deviceType === 'string' && ACTION_TYPES.includes(deviceType))) {
+    return null;
+  }
   
   // 1. Определяем помещение
   let siteId = payload.site || (payload.state && payload.state.site);
@@ -1411,7 +1420,7 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
         }
 
         // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-        if (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type)) {
+        if (isActionScriptType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
           return;
         }
 
@@ -5352,7 +5361,7 @@ class TerminalKitStatusDisplay {
     }
 
     // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-    if (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type)) {
+    if (isActionScriptType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
       return;
     }
 
