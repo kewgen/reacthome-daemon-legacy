@@ -1106,6 +1106,17 @@ function getDeviceIcon(deviceType, category) {
   return '';
 }
 
+// Зачем: в терминале ширина символов (особенно emoji) может быть 1 или 2 клетки.
+// Это влияет на выравнивание колонки "Название" (иконка + текст).
+// Здесь используем простую эвристику:
+// - пустая строка -> 0
+// - многокодпойнтовые/суррогатные последовательности (часто emoji) -> 2
+// - иначе -> 1
+function getTerminalIconVisualWidth(icon) {
+  if (!icon) return 0;
+  return icon.length > 1 ? 2 : 1;
+}
+
 // Получаем имя устройства из payload WebSocket
 // Зачем: Всегда выводим "code title" для единообразного отображения
 function getDeviceName(payload) {
@@ -2871,7 +2882,8 @@ class TerminalKitStatusDisplay {
     
     // Заголовки таблицы
     const nameX = this.centerX + 1;
-    const nameWidth = 22;
+    // Зачем: расширяем колонку "Название" на +15 символов по запросу
+    const nameWidth = 37;
     const typeX = nameX + nameWidth + 3;
     const typeWidth = 18;
     const siteX = typeX + typeWidth + 3;
@@ -2946,10 +2958,14 @@ class TerminalKitStatusDisplay {
       
       // Выводим иконку в фиксированном пространстве (4 визуальных символа: иконка + пробелы)
       if (icon) {
-        term(icon); // Выводим иконку (обычно 2 визуальных символа)
-        term('  '); // Добавляем 2 пробела для фиксированного расстояния (итого 4 визуальных символа)
+        // Раньше предполагали, что emoji всегда шириной 2 клетки и добавляли ровно два пробела.
+        // На некоторых терминалах часть иконок может иметь ширину 1 клетку → имя "прыгает".
+        const iconVisualWidth = getTerminalIconVisualWidth(icon);
+        term(icon);
+        term(' '.repeat(Math.max(0, iconSpace - iconVisualWidth)));
       } else {
-        term(' '.repeat(iconSpace)); // Если иконки нет, выводим пробелы для сохранения выравнивания
+        // Если иконки нет, выводим пробелы для сохранения выравнивания
+        term(' '.repeat(iconSpace));
       }
 
       // Выводим префикс протечки если есть
