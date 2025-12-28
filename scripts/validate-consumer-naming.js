@@ -67,17 +67,18 @@ const CYR_TO_LAT = {
   а: 'A', в: 'B', с: 'C', е: 'E', н: 'H', к: 'K', м: 'M', о: 'O', п: 'P', р: 'P', т: 'T', х: 'X', у: 'Y',
 };
 
-const SPEC_RE_GLOBAL = /(\d{1,3})\.([A-Z]{1,2})\.([A-Z0-9]{1,12})\.(\d{1,3})/g; // канон: ROOM.ACT.KIND.CH
-const SPEC_RE_COMPACT = /(\d{1,3})\.([A-Z]{1,2})\.([A-Z]{1,12})(\d{1,3})\b/g;   // легаси: ROOM.ACT.KINDCH
+// Зачем: ACT может содержать номер группы (например R2, R3 для штор), поэтому поддерживаем формат [A-Z][0-9]*
+const SPEC_RE_GLOBAL = /(\d{1,3})\.([A-Z][0-9]*)\.([A-Z0-9]{1,12})\.(\d{1,3})/g; // канон: ROOM.ACT.KIND.CH (ACT может быть R, R2, R3 и т.д.)
+const SPEC_RE_COMPACT = /(\d{1,3})\.([A-Z][0-9]*)\.([A-Z]{1,12})(\d{1,3})\b/g;   // легаси: ROOM.ACT.KINDCH
 const SPEC_RE_THREE = /(\d{1,3})\.([A-Z]{1,12})\.(\d{1,3})\b/g;                               // легаси: ROOM.KIND.CH (без ACT)
-const SPEC_RE_GR_PREFIX = /ГР\.(\d{1,3})\.([A-Z]{1,2})\.(\d{1,3})\b/gi; // формат из проекта: Гр.ROOM.ACT.CH
-const SPEC_RE_REVERSE = /(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z]{1,2})\.(\d{1,3})\b/g; // легаси: ROOM.KIND.ACT.CH (обратный порядок)
+const SPEC_RE_GR_PREFIX = /ГР\.(\d{1,3})\.([A-Z][0-9]*)\.(\d{1,3})\b/gi; // формат из проекта: Гр.ROOM.ACT.CH
+const SPEC_RE_REVERSE = /(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z][0-9]*)\.(\d{1,3})\b/g; // легаси: ROOM.KIND.ACT.CH (обратный порядок)
 
-const SPEC_AT_START_CANON = /^\s*(\d{1,3})\.([A-Z]{1,2})\.([A-Z0-9]{1,12})\.(\d{1,3})\b/;
-const SPEC_AT_START_COMPACT = /^\s*(\d{1,3})\.([A-Z]{1,2})\.([A-Z]{1,12})(\d{1,3})\b/;
+const SPEC_AT_START_CANON = /^\s*(\d{1,3})\.([A-Z][0-9]*)\.([A-Z0-9]{1,12})\.(\d{1,3})\b/;
+const SPEC_AT_START_COMPACT = /^\s*(\d{1,3})\.([A-Z][0-9]*)\.([A-Z]{1,12})(\d{1,3})\b/;
 const SPEC_AT_START_THREE = /^\s*(\d{1,3})\.([A-Z]{1,12})\.(\d{1,3})\b/;
-const SPEC_AT_START_GR_PREFIX = /^\s*ГР\.(\d{1,3})\.([A-Z]{1,2})\.(\d{1,3})\b/i;
-const SPEC_AT_START_REVERSE = /^\s*(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z]{1,2})\.(\d{1,3})\b/;
+const SPEC_AT_START_GR_PREFIX = /^\s*ГР\.(\d{1,3})\.([A-Z][0-9]*)\.(\d{1,3})\b/i;
+const SPEC_AT_START_REVERSE = /^\s*(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z][0-9]*)\.(\d{1,3})\b/;
 
 function parseArgs() {
   const argv = process.argv.slice(2);
@@ -151,7 +152,8 @@ function findSpecPrefix(text) {
   const m1 = SPEC_RE_GLOBAL.exec(t);
   if (m1) {
     const room = Number(m1[1]);
-    const act = canonicalizeMachineText(m1[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m1[2]).replace(/[^A-Z0-9]/g, '');
     const kind = canonicalKind(m1[3]);
     const ch = Number(m1[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act && kind) {
@@ -164,7 +166,8 @@ function findSpecPrefix(text) {
   const m2 = SPEC_RE_COMPACT.exec(t);
   if (m2) {
     const room = Number(m2[1]);
-    const act = canonicalizeMachineText(m2[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m2[2]).replace(/[^A-Z0-9]/g, '');
     const kind = canonicalKind(m2[3]);
     const ch = Number(m2[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act && kind) {
@@ -189,7 +192,8 @@ function findSpecPrefix(text) {
   const m4 = SPEC_RE_GR_PREFIX.exec(t);
   if (m4) {
     const room = Number(m4[1]);
-    const act = canonicalizeMachineText(m4[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m4[2]).replace(/[^A-Z0-9]/g, '');
     const ch = Number(m4[3]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act) {
       // KIND не указан, используем дефолтное значение или определяем по контексту
@@ -204,7 +208,8 @@ function findSpecPrefix(text) {
   if (m5) {
     const room = Number(m5[1]);
     const kindRaw = m5[2];
-    const act = canonicalizeMachineText(m5[3]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m5[3]).replace(/[^A-Z0-9]/g, '');
     const ch = Number(m5[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act) {
       // Обрабатываем KIND с разделителями типа C/A
@@ -238,7 +243,8 @@ function findSpecAtStart(text) {
   let m = t.match(SPEC_AT_START_CANON);
   if (m) {
     const room = Number(m[1]);
-    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z0-9]/g, '');
     const kind = canonicalKind(m[3]);
     const ch = Number(m[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act && kind) {
@@ -248,7 +254,8 @@ function findSpecAtStart(text) {
   m = t.match(SPEC_AT_START_COMPACT);
   if (m) {
     const room = Number(m[1]);
-    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z0-9]/g, '');
     const kind = canonicalKind(m[3]);
     const ch = Number(m[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act && kind) {
@@ -267,7 +274,8 @@ function findSpecAtStart(text) {
   m = t.match(SPEC_AT_START_GR_PREFIX);
   if (m) {
     const room = Number(m[1]);
-    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z0-9]/g, '');
     const ch = Number(m[3]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act) {
       const kind = 'S220'; // По умолчанию для розеток
@@ -278,7 +286,8 @@ function findSpecAtStart(text) {
   if (m) {
     const room = Number(m[1]);
     const kindRaw = m[2];
-    const act = canonicalizeMachineText(m[3]).replace(/[^A-Z]/g, '');
+    // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
+    const act = canonicalizeMachineText(m[3]).replace(/[^A-Z0-9]/g, '');
     const ch = Number(m[4]);
     if (Number.isFinite(room) && Number.isFinite(ch) && act) {
       const kindParts = kindRaw.split(/[\/\-]/);
