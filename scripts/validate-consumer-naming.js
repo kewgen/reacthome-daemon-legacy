@@ -30,7 +30,7 @@ const CONSUMER_TYPES = new Set([
   'multiroom', 'NOVA',
 ]);
 
-// Зачем: сенсоры тоже приводим к спецификации (пример: датчик протечки 1.LE.1).
+// Зачем: сенсоры тоже приводим к спецификации (пример: датчик протечки 1.P.1).
 const SENSOR_TYPES = new Set([
   'leakage_sensor',
   'thermostat',
@@ -414,7 +414,7 @@ function inferKindFromNames({ type, code, title }) {
 
 function kindBySensorType(type) {
   // Зачем: базовые KIND для сенсоров (короткий формат ROOM.KIND.CH).
-  if (type === 'leakage_sensor') return 'LE';
+  if (type === 'leakage_sensor') return 'P'; // Протечка (изменено с LE на P)
   if (type === 'thermostat') return 'TH';
   if (type === 'hygrostat') return 'HYG';
   if (type === 'co2_stat') return 'CO2';
