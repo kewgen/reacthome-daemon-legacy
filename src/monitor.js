@@ -1678,6 +1678,7 @@ class TerminalKitStatusDisplay {
     this.activeFilters = {
       category: [],      // Массив выбранных категорий
       consumerType: [],  // Массив выбранных типов потребителей
+      consumerOther: false, // Показывать "Другие" типы потребителей (не входящие в CONSUMER_TYPES)
       site: [],          // Массив выбранных помещений
     };
     
@@ -2171,7 +2172,7 @@ class TerminalKitStatusDisplay {
     if (consumerTypes.length > 0) {
       addRow({ label: '', kind: 'spacer' });
       addRow({ label: 'Потребители:', kind: 'title' });
-      const allSelected = this.activeFilters.consumerType.length === 0;
+      const allSelected = this.activeFilters.consumerType.length === 0 && !this.activeFilters.consumerOther;
       addRow({
         label: `${allSelected ? '☑' : '☐'} Все`,
         kind: 'consumer',
@@ -2184,7 +2185,12 @@ class TerminalKitStatusDisplay {
         warm_floor: 'warm_floor', AC: 'AC', FAN: 'FAN', BOILER: 'BOILER', PUMP: 'PUMP',
         thermostat: 'thermostat', hygrostat: 'hygrostat', co2_stat: 'co2_stat',
       };
-      consumerTypes.forEach(type => {
+      // Показываем "типовые" потребители отдельно (строковые типы из CONSUMER_TYPES)
+      const typicalTypes = consumerTypes
+        .filter(type => typeof type === 'string' && CONSUMER_TYPES.includes(type))
+        .sort((a, b) => a.localeCompare(b));
+
+      typicalTypes.forEach(type => {
         const isChecked = this.activeFilters.consumerType.includes(type);
         addRow({
           label: `${isChecked ? '☑' : '☐'} ${consumerNames[type] || type}`,
@@ -2193,6 +2199,18 @@ class TerminalKitStatusDisplay {
           selectable: true,
         });
       });
+
+      // "Другие" — все оставшиеся типы потребителей (включая числовые endpoint-типы и неизвестные строки)
+      const hasOtherConsumers = consumerTypes.some(type => !(typeof type === 'string' && CONSUMER_TYPES.includes(type)));
+      if (hasOtherConsumers) {
+        const isOtherChecked = !!this.activeFilters.consumerOther;
+        addRow({
+          label: `${isOtherChecked ? '☑' : '☐'} Другие`,
+          kind: 'consumer_other',
+          value: true,
+          selectable: true,
+        });
+      }
     }
 
     addRow({ label: '', kind: 'spacer' });
@@ -2250,6 +2268,7 @@ class TerminalKitStatusDisplay {
       if (row.value === null) {
         // "Все" - сбрасываем все типы потребителей
         this.activeFilters.consumerType = [];
+        this.activeFilters.consumerOther = false;
       } else {
         // Toggle: если уже есть в массиве, удаляем, иначе добавляем
         const index = this.activeFilters.consumerType.indexOf(row.value);
@@ -2259,6 +2278,9 @@ class TerminalKitStatusDisplay {
           this.activeFilters.consumerType.push(row.value);
         }
       }
+    } else if (row.kind === 'consumer_other') {
+      // Toggle: "Другие" — все потребители, которые не попали в типовые CONSUMER_TYPES
+      this.activeFilters.consumerOther = !this.activeFilters.consumerOther;
     } else if (row.kind === 'site') {
       if (row.value === null) {
         // "Все" - сбрасываем все помещения
@@ -2317,9 +2339,17 @@ class TerminalKitStatusDisplay {
       }
       
       // Фильтр по типу потребителя (мультифильтр: если массив не пуст, проверяем вхождение)
-      if (this.activeFilters.consumerType.length > 0) {
-        // Показываем только потребителей выбранных типов
-        if (device.category !== 'Потребитель' || !this.activeFilters.consumerType.includes(device.type)) {
+      if (this.activeFilters.consumerType.length > 0 || this.activeFilters.consumerOther) {
+        // Показываем только потребителей выбранных типов и/или "Другие"
+        if (device.category !== 'Потребитель') {
+          return false;
+        }
+
+        const isTypical = (typeof device.type === 'string' && CONSUMER_TYPES.includes(device.type));
+        const matchesTypical = isTypical && this.activeFilters.consumerType.includes(device.type);
+        const matchesOther = !isTypical && this.activeFilters.consumerOther;
+
+        if (!matchesTypical && !matchesOther) {
           return false;
         }
       }
