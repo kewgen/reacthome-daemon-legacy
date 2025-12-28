@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.65 (ручное управление версией)
+ * Версия: 1.0.66 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.65';
+const VERSION = '1.0.66';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -3823,7 +3823,7 @@ class TerminalKitStatusDisplay {
     }
     if (shouldShowParam('setpoint', setpoint)) {
       let unit = '°C';
-      if (device.type === 'co2_stat' || device.type === 'CO2_STAT') {
+      if (device.type === 'co2_stat' || device.type === 'CO2_STAT' || device.type === 0x2b || device.type === 43) {
         unit = ' ppm';
       } else if (device.type === 'hygrostat' || device.type === 'HYGROSTAT') {
         unit = '%';
