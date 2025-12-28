@@ -70,10 +70,14 @@ const CYR_TO_LAT = {
 const SPEC_RE_GLOBAL = /(\d{1,3})\.([A-Z]{1,2})\.([A-Z0-9]{1,12})\.(\d{1,3})/g; // канон: ROOM.ACT.KIND.CH
 const SPEC_RE_COMPACT = /(\d{1,3})\.([A-Z]{1,2})\.([A-Z]{1,12})(\d{1,3})\b/g;   // легаси: ROOM.ACT.KINDCH
 const SPEC_RE_THREE = /(\d{1,3})\.([A-Z]{1,12})\.(\d{1,3})\b/g;                               // легаси: ROOM.KIND.CH (без ACT)
+const SPEC_RE_GR_PREFIX = /ГР\.(\d{1,3})\.([A-Z]{1,2})\.(\d{1,3})\b/gi; // формат из проекта: Гр.ROOM.ACT.CH
+const SPEC_RE_REVERSE = /(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z]{1,2})\.(\d{1,3})\b/g; // легаси: ROOM.KIND.ACT.CH (обратный порядок)
 
 const SPEC_AT_START_CANON = /^\s*(\d{1,3})\.([A-Z]{1,2})\.([A-Z0-9]{1,12})\.(\d{1,3})\b/;
 const SPEC_AT_START_COMPACT = /^\s*(\d{1,3})\.([A-Z]{1,2})\.([A-Z]{1,12})(\d{1,3})\b/;
 const SPEC_AT_START_THREE = /^\s*(\d{1,3})\.([A-Z]{1,12})\.(\d{1,3})\b/;
+const SPEC_AT_START_GR_PREFIX = /^\s*ГР\.(\d{1,3})\.([A-Z]{1,2})\.(\d{1,3})\b/i;
+const SPEC_AT_START_REVERSE = /^\s*(\d{1,3})\.([A-Z0-9]{1,12})\.([A-Z]{1,2})\.(\d{1,3})\b/;
 
 function parseArgs() {
   const argv = process.argv.slice(2);
@@ -132,6 +136,10 @@ function canonicalKind(kindRaw) {
   if (k === 'MULTIROOM') return 'MR';
   if (k === 'VALVEHEATING') return 'VALVEH';
   if (k === 'VALVEWATER') return 'VALVEW';
+  // Легаси коды из проектной документации
+  if (k === 'HFU') return 'WF'; // Heating Floor Unit → Warm Floor
+  if (k === 'CA' || k === 'C') return 'C'; // C/A или C → Curtains
+  if (k === 'SCREEN') return 'SCREEN';
   return k;
 }
 
@@ -176,6 +184,50 @@ function findSpecPrefix(text) {
     }
   }
 
+  // 4) Формат из проектной документации: Гр.ROOM.ACT.CH (например Гр.9.Р.19)
+  SPEC_RE_GR_PREFIX.lastIndex = 0;
+  const m4 = SPEC_RE_GR_PREFIX.exec(t);
+  if (m4) {
+    const room = Number(m4[1]);
+    const act = canonicalizeMachineText(m4[2]).replace(/[^A-Z]/g, '');
+    const ch = Number(m4[3]);
+    if (Number.isFinite(room) && Number.isFinite(ch) && act) {
+      // KIND не указан, используем дефолтное значение или определяем по контексту
+      const kind = 'S220'; // По умолчанию для розеток (Гр. используется для розеточных групп)
+      return { room, act, kind, ch, prefix: `${room}.${act}.${kind}.${ch}`, source: 'gr_prefix' };
+    }
+  }
+
+  // 5) Легаси: ROOM.KIND.ACT.CH (обратный порядок, например 1.HFU.R.6, 1.C/A.2.4)
+  SPEC_RE_REVERSE.lastIndex = 0;
+  const m5 = SPEC_RE_REVERSE.exec(t);
+  if (m5) {
+    const room = Number(m5[1]);
+    const kindRaw = m5[2];
+    const act = canonicalizeMachineText(m5[3]).replace(/[^A-Z]/g, '');
+    const ch = Number(m5[4]);
+    if (Number.isFinite(room) && Number.isFinite(ch) && act) {
+      // Обрабатываем KIND с разделителями типа C/A
+      const kindParts = kindRaw.split(/[\/\-]/);
+      const kind = canonicalKind(kindParts[0]); // Берём первую часть
+      if (kind) {
+        return { room, act, kind, ch, prefix: `${room}.${act}.${kind}.${ch}`, source: 'reverse_order' };
+      }
+    }
+  }
+
+  // 6) Упрощённый формат из проекта: ROOM.P.CH (например 1.P.1, 2.P.1)
+  // P означает общий код потребителя, KIND определяется по контексту в computeExpected
+  const m6 = t.match(/(\d{1,3})\.P\.(\d{1,3})\b/);
+  if (m6) {
+    const room = Number(m6[1]);
+    const ch = Number(m6[2]);
+    if (Number.isFinite(room) && Number.isFinite(ch)) {
+      // KIND будет определён позже по типу устройства
+      return { room, act: null, kind: null, ch, prefix: `${room}.P.${ch}`, source: 'simplified_p' };
+    }
+  }
+
   return null;
 }
 
@@ -210,6 +262,38 @@ function findSpecAtStart(text) {
     const ch = Number(m[3]);
     if (Number.isFinite(room) && Number.isFinite(ch) && kind) {
       return { room, act: null, kind, ch, prefix: `${room}.${kind}.${ch}`, source: 'three' };
+    }
+  }
+  m = t.match(SPEC_AT_START_GR_PREFIX);
+  if (m) {
+    const room = Number(m[1]);
+    const act = canonicalizeMachineText(m[2]).replace(/[^A-Z]/g, '');
+    const ch = Number(m[3]);
+    if (Number.isFinite(room) && Number.isFinite(ch) && act) {
+      const kind = 'S220'; // По умолчанию для розеток
+      return { room, act, kind, ch, prefix: `${room}.${act}.${kind}.${ch}`, source: 'gr_prefix' };
+    }
+  }
+  m = t.match(SPEC_AT_START_REVERSE);
+  if (m) {
+    const room = Number(m[1]);
+    const kindRaw = m[2];
+    const act = canonicalizeMachineText(m[3]).replace(/[^A-Z]/g, '');
+    const ch = Number(m[4]);
+    if (Number.isFinite(room) && Number.isFinite(ch) && act) {
+      const kindParts = kindRaw.split(/[\/\-]/);
+      const kind = canonicalKind(kindParts[0]);
+      if (kind) {
+        return { room, act, kind, ch, prefix: `${room}.${act}.${kind}.${ch}`, source: 'reverse_order' };
+      }
+    }
+  }
+  m = t.match(/^\s*(\d{1,3})\.P\.(\d{1,3})\b/);
+  if (m) {
+    const room = Number(m[1]);
+    const ch = Number(m[2]);
+    if (Number.isFinite(room) && Number.isFinite(ch)) {
+      return { room, act: null, kind: null, ch, prefix: `${room}.P.${ch}`, source: 'simplified_p' };
     }
   }
   return null;
