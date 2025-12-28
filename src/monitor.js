@@ -2,7 +2,7 @@
 
 /**
  * Мониторинг щитовых устройств с терминальным UI на terminal-kit
- * Версия: 1.0.60 (ручное управление версией)
+ * Версия: 1.0.64 (ручное управление версией)
  * 
  * Высокопроизводительный монитор для Raspberry Pi и desktop систем.
  * Оптимизирован для работы с сотнями устройств и минимального потребления CPU.
@@ -585,7 +585,7 @@ const fs = require('fs');
 const path = require('path');
 
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.60';
+const VERSION = '1.0.64';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -2975,8 +2975,7 @@ class TerminalKitStatusDisplay {
       const icon = getDeviceIcon(device.type, device.category) || '';
       // Резервируем 4 визуальных символа для иконки (эмодзи + пробелы для выравнивания)
       const iconSpace = 4; // Фиксированное пространство для иконки (визуальные символы)
-      const name = (device.name || device.id || '—').substring(0, nameWidth - iconSpace);
-      const namePadded = name.padEnd(nameWidth - iconSpace);
+      const maxNameLen = nameWidth - iconSpace;
       
       // Проверяем значение устройства и выводим зелёным цветом если:
       // - value > 0 (числовое значение больше нуля)
@@ -2986,6 +2985,19 @@ class TerminalKitStatusDisplay {
       const deviceState = deviceData?.state;
       const deviceValue = deviceState?.value;
       const deviceInverse = deviceState?.inverse;
+
+      // Зачем: В списке устройств визуально помечаем протечку у leakage_sensor (DI=1) через ⚠️ у названия
+      const isLeakageSensor = device.type === 'leakage_sensor';
+      const leakageBindValue = deviceState?.bind || device.bind || null;
+      const leakageBindChannelValue = leakageBindValue ? this.deviceStates.get(leakageBindValue)?.state?.value : undefined;
+      // Зачем: После старта у monitor нет данных по bind DI каналу, пока не сделать GET. Раньше это происходило только по ENTER.
+      // Здесь инициируем GET по bind один раз, чтобы протечки отображались сразу, без ручного обновления.
+      if (isLeakageSensor && typeof leakageBindValue === 'string' && /\/di\/\d+$/.test(leakageBindValue) && leakageBindChannelValue === undefined) {
+        this.requestMissingDevice(leakageBindValue);
+      }
+      const leakageWarnPrefix = isLeakageSensor && leakageBindChannelValue === 1 ? '⚠️ ' : '';
+      const name = (leakageWarnPrefix + (device.name || device.id || '—')).substring(0, maxNameLen);
+      const namePadded = name.padEnd(maxNameLen);
       
       // Проверяем различные условия для включенного состояния
       const isValueGreaterThanZero = typeof deviceValue === 'number' && deviceValue > 0;
@@ -3681,9 +3693,6 @@ class TerminalKitStatusDisplay {
     info.push(`type: ${device.typeName} (${device.type})`);
     info.push(`category: ${device.category || '—'}`);
     info.push(`site: ${device.site || '—'}`);
-    if (device.siteId && device.siteId !== device.site) {
-      info.push(`siteId: ${device.siteId}`);
-    }
     info.push('');
     info.push(`Status:`);
     
@@ -3813,7 +3822,13 @@ class TerminalKitStatusDisplay {
       info.push(`  Направление: ${direction !== undefined && direction !== null ? direction : '—'}`);
     }
     if (shouldShowParam('setpoint', setpoint)) {
-      info.push(`  Уставка: ${setpoint !== undefined && setpoint !== null ? setpoint + '°C' : '—'}`);
+      let unit = '°C';
+      if (device.type === 'co2_stat' || device.type === 'CO2_STAT') {
+        unit = ' ppm';
+      } else if (device.type === 'hygrostat' || device.type === 'HYGROSTAT') {
+        unit = '%';
+      }
+      info.push(`  Уставка: ${setpoint !== undefined && setpoint !== null ? setpoint + unit : '—'}`);
     }
     
     const hasRgb = r !== undefined || g !== undefined || b !== undefined;
@@ -4280,11 +4295,14 @@ class TerminalKitStatusDisplay {
             const channelValue = channelState.value !== undefined ? channelState.value : '—';
             // Добавляем маркер для зелёного цвета, если значение > 0
             // Зачем: Визуально выделяем активное состояние канала зелёным цветом
-            const isChannelActive = typeof channelValue === 'number' && channelValue > 0;
+            // Для leakage_sensor инвертируем семантику: value=1 = протечка (активно)
+            const isChannelActive = typeof channelValue === 'number' && channelValue !== 0;
             const valueMarker = isChannelActive ? '__GREEN_VALUE__' : '';
             info.push(`  Состояние канала: ${valueMarker}${channelValue}`);
           } else {
             info.push(`  Состояние канала: — (данные не получены)`);
+            // Зачем: для UI leakage_sensor важно показать актуальный DI канал сразу
+            this.requestMissingDevice(channelId);
           }
           
           // Показываем помещение модуля, если есть
@@ -4841,6 +4859,16 @@ class TerminalKitStatusDisplay {
           const sensorReady = sensorState?.ready;
           const sensorOnline = sensorState?.online;
           const leakage = sensorState?.leakage;
+          const bindValueForSensor = sensorState?.bind || sensor.bind;
+          const bindChannelState = bindValueForSensor ? this.deviceStates.get(bindValueForSensor)?.state : null;
+          // Инвертируем отображение: value=1 на DI/канале = протечка
+          const leakageFromBind = bindChannelState && bindChannelState.value !== undefined
+            ? (bindChannelState.value === 1)
+            : undefined;
+          const leakActive =
+            (leakage === true) ||
+            (leakage === false ? false : (leakageFromBind === true)) ||
+            (typeof leakage === 'number' ? leakage > 0 : false);
           
           // Извлекаем номер DI канала
           const bind = sensorState?.bind || sensor.bind;
@@ -4848,7 +4876,7 @@ class TerminalKitStatusDisplay {
           const diNum = diMatch ? diMatch[1] : '?';
           
           // Статус датчика
-          const status = leakage ? '⚠️ ' : (sensorReady ? '🟢' : (sensorOnline ? '🟡' : '🔴'));
+          const status = leakActive ? '⚠️ ' : (sensorReady ? '🟢' : (sensorOnline ? '🟡' : '🔴'));
           
           // Название датчика (приоритет: code → title)
           const sensorName = sensor.code || sensor.title || sensor.id.substring(0, 20) + '...';
@@ -4857,7 +4885,7 @@ class TerminalKitStatusDisplay {
           const sensorSite = sensor.site || '—';
           
           info.push(`  DI/${diNum}: ${status} ${sensorName}`);
-          if (leakage) {
+          if (leakActive) {
             info.push(`         💧 ПРОТЕЧКА ОБНАРУЖЕНА!`);
           }
           info.push(`         Помещение: ${sensorSite}`);
@@ -4889,9 +4917,22 @@ class TerminalKitStatusDisplay {
             const moduleState = moduleData?.state;
             const moduleReady = moduleState?.ready;
             const moduleOnline = moduleState?.online;
+
+            // Зачем: Для датчиков протечки вычисляем статус по bind DI каналу (value=1 => протечка).
+            // В payload leakage_sensor часто нет поля leakage, поэтому источник истины — DI канал bind.
+            const bindChannelData = this.deviceStates.get(bindValue);
+            const bindChannelState = bindChannelData?.state || bindChannelData || null;
+            const bindChannelValue = bindChannelState?.value;
+            const leakActiveFromBind = (bindChannelValue === 1);
+            const leakActive = (state?.leakage === true) || leakActiveFromBind;
+
+            // Зачем: если состояние канала ещё не получено, запрашиваем его явно
+            if (!bindChannelState) {
+              this.requestMissingDevice(bindValue);
+            }
             
             // Статус модуля
-            const status = moduleReady ? '🟢' : (moduleOnline ? '🟡' : '🔴');
+            const status = leakActive ? '⚠️ ' : (moduleReady ? '🟢' : (moduleOnline ? '🟡' : '🔴'));
             
             // Название модуля (приоритет: code → title)
             const moduleName = module.code || module.title || moduleId.substring(0, 20) + '...';
@@ -4910,9 +4951,12 @@ class TerminalKitStatusDisplay {
             }
             
             // Статус протечки
-            const leakage = state?.leakage;
-            if (leakage !== undefined) {
-              info.push(`  Протечка: ${leakage ? '⚠️  ДА' : '✅ Нет'}`);
+            if (bindChannelValue !== undefined) {
+              info.push(`  Протечка (DI=${bindChannelValue}): ${leakActive ? '⚠️  ДА' : '✅ Нет'}`);
+            } else if (state?.leakage !== undefined) {
+              info.push(`  Протечка: ${state.leakage ? '⚠️  ДА' : '✅ Нет'}`);
+            } else {
+              info.push(`  Протечка: — (нет данных по DI каналу)`);
             }
           } else {
             // Модуль не найден
