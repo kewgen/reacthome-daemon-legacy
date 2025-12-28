@@ -63,8 +63,8 @@ const KIND_BY_TYPE = new Map([
 // Зачем: запрещаем кириллицу в машинной части; но для обнаружения/миграции
 // поддерживаем "канонизацию" популярных омографов (С->C, Р->P и т.п.).
 const CYR_TO_LAT = {
-  А: 'A', В: 'B', С: 'C', Е: 'E', Н: 'H', К: 'K', М: 'M', О: 'O', Р: 'P', Т: 'T', Х: 'X', У: 'Y',
-  а: 'A', в: 'B', с: 'C', е: 'E', н: 'H', к: 'K', м: 'M', о: 'O', р: 'P', т: 'T', х: 'X', у: 'Y',
+  А: 'A', В: 'B', С: 'C', Е: 'E', Н: 'H', К: 'K', М: 'M', О: 'O', П: 'P', Р: 'P', Т: 'T', Х: 'X', У: 'Y',
+  а: 'A', в: 'B', с: 'C', е: 'E', н: 'H', к: 'K', м: 'M', о: 'O', п: 'P', р: 'P', т: 'T', х: 'X', у: 'Y',
 };
 
 const SPEC_RE_GLOBAL = /(\d{1,3})\.([A-Z]{1,2})\.([A-Z0-9]{1,12})\.(\d{1,3})/g; // канон: ROOM.ACT.KIND.CH
@@ -531,12 +531,26 @@ function computeExpected({ id, payload, roomById, localToGlobalMap }) {
 
   // Зачем: ожидаемый code = ожидаемый префикс + (по возможности) текущий "хвост" (site) без ломания парсинга.
   let site = '';
+  // Зачем: канонизируем код для проверки формата, чтобы кириллические буквы (например "П") преобразовались в латиницу ("P").
+  const canonCode = canonicalizeMachineText(code);
   const specPrefixRe4 = /^\s*\d{1,3}\.[A-Z][A-Z0-9]{0,2}\.[A-Z0-9]{1,12}\.\d{1,3}\s+(.+)\s*$/;
   const specPrefixRe3 = /^\s*\d{1,3}\.[A-Z0-9]{1,12}\.\d{1,3}\s+(.+)\s*$/;
-  const siteFromCode = code.match(specPrefixRe4) || code.match(specPrefixRe3);
-  if (siteFromCode && siteFromCode[1]) {
-    site = normalizeText(siteFromCode[1]);
-  } else if (code && !/[0-9]+\.[A-Z]\./.test(code) && !code.includes('.')) {
+  // Зачем: проверяем формат на канонизированном коде, затем извлекаем site из оригинального кода.
+  const siteMatch = canonCode.match(specPrefixRe4) || canonCode.match(specPrefixRe3);
+  if (siteMatch && siteMatch[1]) {
+    // Зачем: извлекаем site из оригинального кода, используя регулярное выражение с любыми символами для KIND.
+    // Формат 4 части: ROOM.ACT.KIND.CH SITE
+    const siteRe4 = /^\s*\d{1,3}\.[^\s]+\.[^\s]+\.[^\s]+\s+(.+)\s*$/;
+    // Формат 3 части: ROOM.KIND.CH SITE (для сенсоров)
+    const siteRe3 = /^\s*\d{1,3}\.[^\s]+\.[^\s]+\s+(.+)\s*$/;
+    const siteFromOriginal = code.match(siteRe4) || code.match(siteRe3);
+    if (siteFromOriginal && siteFromOriginal[1]) {
+      site = normalizeText(siteFromOriginal[1]);
+    } else {
+      // Fallback: используем канонизированный site
+      site = normalizeText(siteMatch[1]);
+    }
+  } else if (code && !/[0-9]+\.[A-Z]\./.test(canonCode) && !code.includes('.')) {
     // Зачем: если code просто "Лоджия", используем это как site-кандидат.
     site = code;
   }
