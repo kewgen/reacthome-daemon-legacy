@@ -1016,9 +1016,11 @@ const ACTION_TYPES = [
   'ACTION_SCRIPT_RUN', 'ACTION_TIMER_START', 'ACTION_TIMER_STOP',
 ];
 
-// Зачем: Любой тип вида ACTION_* — это "скрипт/действие", а не устройство. Их нельзя отображать в списке устройств.
-function isActionScriptType(type) {
-  return typeof type === 'string' && type.startsWith('ACTION_');
+// Зачем: Типы скриптов/действий — не устройства. Их нельзя отображать в списке устройств.
+function isScriptLikeType(type) {
+  if (typeof type !== 'string') return false;
+  if (type === 'SCRIPT' || type === 'script') return true;
+  return type.startsWith('ACTION_');
 }
 
 function getDeviceCategory(type) {
@@ -1140,7 +1142,7 @@ function createDeviceObject(deviceId, payload, siteMap, sites) {
   const deviceType = payload.type;
 
   // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-  if (isActionScriptType(deviceType) || (typeof deviceType === 'string' && ACTION_TYPES.includes(deviceType))) {
+  if (isScriptLikeType(deviceType) || (typeof deviceType === 'string' && ACTION_TYPES.includes(deviceType))) {
     return null;
   }
   
@@ -1420,7 +1422,7 @@ function loadDevicesAndSitesViaWebSocket(wsUri) {
         }
 
         // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-        if (isActionScriptType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
+        if (isScriptLikeType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
           return;
         }
 
@@ -5361,7 +5363,7 @@ class TerminalKitStatusDisplay {
     }
 
     // Пропускаем ACTION_* типы - это действия скриптов, а не устройства
-    if (isActionScriptType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
+    if (isScriptLikeType(payload.type) || (typeof payload.type === 'string' && ACTION_TYPES.includes(payload.type))) {
       return;
     }
 
