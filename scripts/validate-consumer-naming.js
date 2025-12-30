@@ -576,6 +576,11 @@ function computeExpected({ id, payload, roomById, localToGlobalMap, payloadById 
     if (!Number.isFinite(expectedCh) && Number.isFinite(localCh)) {
       expectedCh = localCh;
     }
+    
+    // Зачем: если ch всё ещё не определён, но room, act и kind есть, используем 1 как fallback для потребителей без bind
+    if (!Number.isFinite(expectedCh) && Number.isFinite(room) && act && kind) {
+      expectedCh = 1;
+    }
 
     // Зачем: сохраняем номер группы в ACT (например R2, R3), удаляем только не-буквенно-цифровые символы
     act = act ? canonicalizeMachineText(act).replace(/[^A-Z0-9]/g, '') : null;

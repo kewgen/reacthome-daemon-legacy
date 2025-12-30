@@ -171,9 +171,13 @@ function escapeHtml(text) {
         newReason = 'code и title полностью совпадают с предлагаемыми';
       }
     } else if (expectedCode && (codeRaw === '' || codeRaw === '—')) {
-      // Зачем: если code пустой, но expectedCode есть, это жёлтый (требуется применение)
-      newLevel = 'yellow';
-      newReason = 'code пустой, требуется применение предлагаемого кода';
+      // Зачем: если code пустой, но expectedCode есть, проверяем title (как в серверной логике)
+      const titleCodeRe = /^\s*\d{1,3}\.[A-Za-zА-Яа-я0-9]{1,2}\.[A-Za-zА-Яа-я0-9]{1,12}\.?\d{0,3}\s*/i;
+      const titleWithoutCode = titleRaw.replace(titleCodeRe, '').trim();
+      if (titleRaw === titleWithoutCode) {
+        newLevel = 'yellow';
+        newReason = 'code пустой, требуется применение предлагаемого кода';
+      }
     } else if (expectedPrefix && codeRaw.startsWith(expectedPrefix)) {
       // Зачем: если code начинается с префикса, проверяем каноничность
       if (codeRaw.startsWith(expectedPrefix) && !/[А-Яа-я]/.test(codeRaw.slice(0, expectedPrefix.length + 2))) {
@@ -186,6 +190,23 @@ function escapeHtml(text) {
     } else if (expectedPrefix && (codeRaw.includes(expectedPrefix) || titleRaw.includes(expectedPrefix))) {
       newLevel = 'yellow';
       newReason = 'префикс найден не в начале code или в title';
+    }
+    
+    // Зачем: если expectedPrefix отсутствует, но expectedCode есть, проверяем совпадение с expectedCode
+    if (!expectedPrefix && expectedCode) {
+      const expectedCodeNormalized = normalizeText(expectedCode);
+      if (codeRaw === expectedCodeNormalized) {
+        newLevel = 'green';
+        newReason = 'code совпадает с предлагаемым (префикс не вычислен)';
+      } else if ((codeRaw === '' || codeRaw === '—') && expectedCodeNormalized) {
+        // Зачем: если code пустой, но expectedCode есть, это жёлтый (требуется применение)
+        const titleCodeRe = /^\s*\d{1,3}\.[A-Za-zА-Яа-я0-9]{1,2}\.[A-Za-zА-Яа-я0-9]{1,12}\.?\d{0,3}\s*/i;
+        const titleWithoutCode = titleRaw.replace(titleCodeRe, '').trim();
+        if (titleRaw === titleWithoutCode) {
+          newLevel = 'yellow';
+          newReason = 'code пустой, требуется применение предлагаемого кода';
+        }
+      }
     }
     
     // Обновляем статус строки
@@ -398,8 +419,9 @@ function escapeHtml(text) {
             const actualTitle = actualPayload.title || '';
             
             // Зачем: обновляем данные в объекте r (UUID остаётся неизменным, обновляются только code и title)
-            r.code = actualCode || r.code;
-            r.title = actualTitle || r.title;
+            // Используем явную проверку на undefined, чтобы пустая строка сохранялась
+            if (actualCode !== undefined) r.code = actualCode;
+            if (actualTitle !== undefined) r.title = actualTitle;
             
             // Обновляем UI на основе реального состояния
             combinedTd.style.opacity = '0.2';
