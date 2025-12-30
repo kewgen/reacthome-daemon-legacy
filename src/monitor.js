@@ -584,8 +584,43 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
+// Зачем: Загружаем переменные окружения из .env файла, если он существует
+// Это позволяет использовать DAEMON_UUID_* переменные без явного export в shell
+const loadEnvFile = () => {
+  const envPath = path.join(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    try {
+      const envContent = fs.readFileSync(envPath, 'utf8');
+      const lines = envContent.split('\n');
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Пропускаем пустые строки и комментарии
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        // Парсим формат KEY=VALUE
+        const match = trimmed.match(/^([^=]+)=(.*)$/);
+        if (match) {
+          const key = match[1].trim();
+          const value = match[2].trim();
+          // Загружаем только если переменная еще не задана (env имеет приоритет)
+          if (!process.env[key] && value) {
+            process.env[key] = value;
+          }
+        }
+      }
+    } catch (error) {
+      // Тихий fallback - если не удалось загрузить .env, продолжаем работу
+      if (process.env.DEBUG_MONITOR_DAEMON_SELECT === '1') {
+        console.log(`[DEBUG] Не удалось загрузить .env файл: ${error.message}`);
+      }
+    }
+  }
+};
+
+// Загружаем .env файл перед использованием переменных окружения
+loadEnvFile();
+
 // Версия монитора (обновляется вручную при каждом коммите)
-const VERSION = '1.0.67';
+const VERSION = '1.0.70';
 
 // Зачем: Для подключения к внешнему шлюзу gate.reacthome.net требуется subprotocol 'listen' (как в ws-ssh)
 const GATE_WS_PROTOCOL = 'listen';
@@ -645,8 +680,102 @@ function parseGateMaybePrefixedJson(dataString) {
 // Зачем: URL "всегда свежего" скрипта на GitHub (raw) для проверки обновлений и самоустановки
 const MONITOR_REMOTE_RAW_URL = 'https://raw.githubusercontent.com/kewgen/reacthome-daemon-legacy/feature/monitor/src/monitor.js';
 
+// Зачем: Читаем все переменные окружения DAEMON_UUID_* и возвращаем список с именами объектов
+const getDaemonUuidEnvVars = () => {
+  const daemonVars = [];
+  const prefix = 'DAEMON_UUID_';
+  
+  // Зачем: Отладочный вывод для понимания, какие переменные найдены
+  const debugMode = process.env.DEBUG_MONITOR_DAEMON_SELECT === '1';
+  
+  for (const [key, value] of Object.entries(process.env)) {
+    if (key.startsWith(prefix) && value && value.trim()) {
+      const objectName = key.substring(prefix.length);
+      daemonVars.push({
+        name: objectName,
+        uuid: value.trim(),
+        envKey: key
+      });
+      if (debugMode) {
+        console.log(`[DEBUG] Найдена переменная: ${key} = ${value.substring(0, 8)}...`);
+      }
+    }
+  }
+  
+  if (debugMode) {
+    console.log(`[DEBUG] Всего найдено переменных DAEMON_UUID_*: ${daemonVars.length}`);
+  }
+  
+  return daemonVars.sort((a, b) => a.name.localeCompare(b.name));
+};
+
+// Зачем: Интерактивный выбор демона из списка DAEMON_UUID_* переменных через terminal-kit
+const selectDaemonFromEnv = async () => {
+  const daemonVars = getDaemonUuidEnvVars();
+  
+  if (daemonVars.length === 0) {
+    // Зачем: Информируем пользователя, что переменные не найдены (только если не задан REACTHOME_WS_URI)
+    if (!process.env.REACTHOME_WS_URI && process.env.DEBUG_MONITOR_DAEMON_SELECT !== '1') {
+      // Тихий режим - не выводим сообщение, если не включен debug
+    }
+    return null;
+  }
+  
+  if (daemonVars.length === 1) {
+    // Если только один демон, используем его автоматически
+    console.log(`[INFO] Найден демон: ${daemonVars[0].name} (${daemonVars[0].uuid.substring(0, 8)}...)`);
+    return daemonVars[0].uuid;
+  }
+  
+  // Если несколько демонов, предлагаем выбор
+  // Зачем: Проверяем, что терминал интерактивный (TTY), иначе используем простой выбор через readline
+  if (!term.isTTY) {
+    // Fallback для неинтерактивных терминалов (например, при запуске через cron)
+    console.log('\nНайдено несколько демонов в переменных окружения:');
+    daemonVars.forEach((daemon, index) => {
+      console.log(`  ${index + 1}. ${daemon.name} (${daemon.uuid.substring(0, 8)}...)`);
+    });
+    console.log('\n[WARN] Неинтерактивный терминал. Используется первый демон из списка.');
+    return daemonVars[0].uuid;
+  }
+  
+  console.log('\nНайдено несколько демонов в переменных окружения:');
+  daemonVars.forEach((daemon, index) => {
+    console.log(`  ${index + 1}. ${daemon.name} (${daemon.uuid.substring(0, 8)}...)`);
+  });
+  console.log('\nВыберите подключение:');
+  
+  return new Promise((resolve, reject) => {
+    // Используем terminal-kit для интерактивного выбора
+    const items = daemonVars.map(d => `${d.name} (${d.uuid.substring(0, 8)}...)`);
+    
+    term.singleColumnMenu(items, {
+      cancelable: false,
+      style: term.inverse,
+      selectedStyle: term.dim.blue.bgBlack,
+      submittedStyle: term.bold,
+      leftPadding: '  ',
+      selectedLeftPadding: '> ',
+      submittedLeftPadding: '✓ '
+    }, (error, response) => {
+      // Зачем: Очищаем экран после выбора, чтобы не мешать дальнейшему выводу монитора
+      term.clear();
+      
+      if (error) {
+        reject(error);
+        return;
+      }
+      
+      const selected = daemonVars[response.selectedIndex];
+      console.log(`[INFO] Выбран демон: ${selected.name}`);
+      resolve(selected.uuid);
+    });
+  });
+};
+
 // Зачем: Определяем адрес WebSocket из переменной окружения, аргумента командной строки или используем дефолт
-const getWebSocketUri = () => {
+// Теперь поддерживает выбор из DAEMON_UUID_* переменных
+const getWebSocketUri = async () => {
   // 1. Проверяем аргумент командной строки (--ws-uri или первый позиционный аргумент)
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -661,15 +790,34 @@ const getWebSocketUri = () => {
       return args[i];
     }
   }
-  // 2. Проверяем переменную окружения
+  
+  // 2. Проверяем переменную окружения REACTHOME_WS_URI (приоритет над DAEMON_UUID_*)
   if (process.env.REACTHOME_WS_URI) {
     return process.env.REACTHOME_WS_URI;
   }
-  // 3. Дефолтное значение
+  
+  // 3. Проверяем DAEMON_UUID_* переменные и предлагаем выбор, если их больше одной
+  const selectedUuid = await selectDaemonFromEnv();
+  if (selectedUuid) {
+    // Формируем URI для подключения через gate
+    const gateUrl = process.env.GATE_URL || 'wss://gate.reacthome.net';
+    const wsUri = `${gateUrl}/${selectedUuid}`;
+    console.log(`[INFO] Используется подключение через gate: ${gateUrl}`);
+    return wsUri;
+  }
+  
+  // 4. Дефолтное значение
+  // Зачем: Информируем пользователя о возможности использования DAEMON_UUID_* переменных
+  if (!process.env.REACTHOME_WS_URI) {
+    console.log('[INFO] Переменные DAEMON_UUID_* не найдены.');
+    console.log('[INFO] Для подключения через gate задайте переменные окружения:');
+    console.log('[INFO]   export DAEMON_UUID_<ИМЯ>=<UUID>');
+    console.log('[INFO]   например: export DAEMON_UUID_POCHTOVAYA=12345678-1234-1234-1234-123456789abc');
+    console.log('[INFO] Или используйте REACTHOME_WS_URI для прямого подключения.');
+    console.log('[INFO] Используется дефолт: ws://localhost:3000');
+  }
   return 'ws://localhost:3000';
 };
-
-const WS_URI = getWebSocketUri(); // По умолчанию подключаемся к локальному WebSocket серверу
 
 // Зачем: Проверяем наличие более свежей версии скрипта на GitHub и предлагаем обновиться
 const shouldCheckUpdates = () => {
@@ -3640,10 +3788,9 @@ class TerminalKitStatusDisplay {
       : device.id;
     info.push(`__DEVICE_TITLE__${deviceTitle}`); // Специальный маркер для зелёного цвета
     info.push('');
-    // Выводим все идентификаторы устройства (title, code, name) для полной информации
+    // Выводим идентификаторы устройства (title, code) для полной информации
     info.push(`title: ${device.title || '—'}`);
     info.push(`code: ${device.code || '—'}`);
-    info.push(`name: ${device.nameField || '—'}`);
     info.push(`id: ${device.id}`);
     info.push(`type: ${device.typeName} (${device.type})`);
     info.push(`category: ${device.category || '—'}`);
@@ -5658,6 +5805,9 @@ async function main() {
     // Зачем: Перед подключением к WebSocket проверяем, нет ли более свежей версии монитора
     console.log('[INFO] Проверка обновлений монитора...');
     const updateInfo = await checkForRemoteUpdateAndMaybeApply();
+    
+    // Зачем: Определяем адрес WebSocket (может потребоваться интерактивный выбор из DAEMON_UUID_*)
+    const WS_URI = await getWebSocketUri();
     
     // Загружаем устройства и помещения полностью через WebSocket
     console.log('Подключение к WebSocket для загрузки устройств и помещений...');
