@@ -229,8 +229,24 @@ const ARTNET_VELOCITY = 1;
 const bind = ["r", "g", "b", "bind"];
 const rgb = ["r", "g", "b"];
 
+// Защита от бесконечной рекурсии (фатальное падение 16.01.2026 04:49)
+// Проблема: циклические зависимости скриптов через onOff/onOn устройств
+// Решение: ограничение глубины вложенных вызовов ACTION_SCRIPT_RUN
+const MAX_RECURSION_DEPTH = 100;
+let recursionDepth = 0;
 
 const run = (action) => {
+  // Проверка глубины рекурсии перед выполнением
+  if (recursionDepth >= MAX_RECURSION_DEPTH) {
+    console.error('[service] Maximum recursion depth exceeded', {
+      action,
+      depth: recursionDepth,
+      timestamp: new Date().toISOString()
+    });
+    return;
+  }
+  
+  recursionDepth++;
   try {
     switch (action.type) {
       case ACTION_FIND_ME: {
@@ -3386,6 +3402,9 @@ const run = (action) => {
   } catch (e) {
     console.error(action);
     console.error(e);
+  } finally {
+    // Уменьшаем счетчик при выходе из функции (успешном или с ошибкой)
+    recursionDepth--;
   }
 };
 
