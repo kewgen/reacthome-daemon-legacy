@@ -36,14 +36,14 @@ const compare = (words, tests) => {
 
 for (const test of tests) {
     for (const subject of subjects) {
-        // console.log(
-        //     test,
-        //     "<->",
-        //     subject,
-        //     "=",
-        //     compare(test.split(" "), subject.split(" ")),
-        //     compare(subject.split(" "), test.split(" ")),
-        // )
-        // console.log()
+        console.log(
+            test,
+            "<->",
+            subject,
+            "=",
+            compare(test.split(" "), subject.split(" ")),
+            compare(subject.split(" "), test.split(" ")),
+        )
+        console.log()
     }
 }

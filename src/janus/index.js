@@ -15,7 +15,7 @@ const handlers = new Map();
 let socket;
 
 const connect = () => {
-  socket = new WebSocket('ws://localhost:8188', 'janus-protocol');
+  socket = new WebSocket(process.env.JANUS_WS_URL || 'ws://localhost:8188', 'janus-protocol');
   socket.on('message', (message) => {
     try {
       const action = JSON.parse(message);
@@ -37,7 +37,7 @@ const connect = () => {
     console.error('Error. Reconnecting to janus');
   });
   socket.on('close', () => {
-    // console.log('Disconnect. Reconnecting to janus');
+    console.log('Disconnect. Reconnecting to janus');
     setTimeout(connect, TIMEOUT_RECONNECT);
   });
   callbacks.clear();

@@ -1,5 +1,5 @@
 
-var net = require('net');
+const net = require('net');
 const { get, set } = require('../actions');
 const service = require('../controllers/service');
 const { ACTION_SCRIPT_RUN } = require('../constants');

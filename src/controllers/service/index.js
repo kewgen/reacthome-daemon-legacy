@@ -202,7 +202,6 @@ const {
   DIM,
   DO,
   DEVICE_TYPE_SMART_TOP_A4TD_7S,
-  DRIVER_TYPE_PROXY,
 } = require("../constants");
 const { NOTIFY } = require("../notification/constants");
 const notification = require("../notification");
@@ -219,6 +218,48 @@ const { RING } = require("../ring/constants");
 const { ip2int, toRelativeHumidity, toKelvin } = require("../util");
 const { char2image } = require("../drivers/display");
 const childProcess = require("child_process");
+const climate = require("./climate");
+const scheduling = require("./scheduling");
+
+// media-api: протокол media: URI → HTTP API на медиасервере (192.168.88.5:3001)
+// Формат: media:ZONE play PRESET [VOL] | media:ZONE stop | media:ZONE volume VALUE
+const MEDIA_API = "http://192.168.88.5:3001";
+const MEDIA_RE = /^media:(\S+)\s+(\w+)(?:\s+(\S+))?(?:\s+(\d+))?$/;
+
+function sendToMediaApi(path, body, id, command) {
+  fetch(MEDIA_API + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  })
+    .then((r) => r.json())
+    .then((data) => {
+      if (data.ok) {
+        set(id, { command, value: true, error: "", pid: data.pid || 1 });
+      } else {
+        set(id, { error: data.error || "media-api error" });
+      }
+    })
+    .catch((e) => {
+      set(id, { error: "media-api unreachable: " + e.message });
+    });
+}
+
+function tryMediaCommand(command, id) {
+  const m = command.match(MEDIA_RE);
+  if (!m) return false;
+  const [, zone, action, arg1, arg2] = m;
+  if (action === "play") {
+    sendToMediaApi("/radio/start", { zone, preset: arg1, volume: parseInt(arg2 || "30") }, id, command);
+  } else if (action === "stop") {
+    sendToMediaApi("/radio/stop", { zone }, id, command);
+  } else if (action === "volume") {
+    sendToMediaApi("/volume", { zone, value: arg1 }, id, command);
+  } else {
+    return false;
+  }
+  return true;
+}
 
 const timers = {};
 const schedules = {};
@@ -230,8 +271,24 @@ const ARTNET_VELOCITY = 1;
 const bind = ["r", "g", "b", "bind"];
 const rgb = ["r", "g", "b"];
 
+// Защита от бесконечной рекурсии (фатальное падение 16.01.2026 04:49)
+// Проблема: циклические зависимости скриптов через onOff/onOn устройств
+// Решение: ограничение глубины вложенных вызовов ACTION_SCRIPT_RUN
+const MAX_RECURSION_DEPTH = 100;
+let recursionDepth = 0;
 
 const run = (action) => {
+  // Проверка глубины рекурсии перед выполнением
+  if (recursionDepth >= MAX_RECURSION_DEPTH) {
+    console.error('[service] Maximum recursion depth exceeded', {
+      action,
+      depth: recursionDepth,
+      timestamp: new Date().toISOString()
+    });
+    return;
+  }
+  
+  recursionDepth++;
   try {
     switch (action.type) {
       case ACTION_FIND_ME: {
@@ -262,18 +319,9 @@ const run = (action) => {
         }
         break;
       }
-      case ACTION_UP:
-      case ACTION_DOWN:
       case ACTION_OPEN:
       case ACTION_STOP:
       case ACTION_CLOSE: {
-        const [id_, t_, index] = action.id ? action.id.split("/") : [];
-        if (t_ === 'curtain') {
-          action.id = id_;
-          action.index = index;
-          drivers.run(action);
-          return;
-        }
         const o = get(action.id) || {};
         if (o.type === DRIVER_TYPE_DAUERHAFT) {
           drivers.run(action);
@@ -307,8 +355,6 @@ const run = (action) => {
           case DEVICE_TYPE_RELAY_2_DIN:
           case DEVICE_TYPE_RELAY_12_RS: {
             switch (action.value) {
-              case ACTION_UP:
-              case ACTION_DOWN:
               case ACTION_OPEN:
               case ACTION_CLOSE:
               case ACTION_STOP: {
@@ -332,7 +378,6 @@ const run = (action) => {
                     );
                     break;
                   }
-                  case ACTION_UP:
                   case ACTION_OPEN: {
                     if (group.type === CLOSE_OPEN) {
                       device.sendRBUS(Buffer.from([
@@ -353,7 +398,6 @@ const run = (action) => {
                     }
                     break;
                   }
-                  case ACTION_DOWN:
                   case ACTION_CLOSE: {
                     if (group.type === CLOSE_OPEN) {
                       device.sendRBUS(Buffer.from([
@@ -410,8 +454,6 @@ const run = (action) => {
           case DEVICE_TYPE_RELAY_12: {
             if (major >= 2) {
               switch (action.value) {
-                case ACTION_UP:
-                case ACTION_DOWN:
                 case ACTION_OPEN:
                 case ACTION_CLOSE:
                 case ACTION_STOP: {
@@ -429,7 +471,6 @@ const run = (action) => {
                       );
                       break;
                     }
-                    case ACTION_UP:
                     case ACTION_OPEN: {
                       if (group.type === CLOSE_OPEN) {
                         device.send(
@@ -444,7 +485,6 @@ const run = (action) => {
                       }
                       break;
                     }
-                    case ACTION_DOWN:
                     case ACTION_CLOSE: {
                       if (group.type === CLOSE_OPEN) {
                         device.send(
@@ -1626,12 +1666,6 @@ const run = (action) => {
                   drivers.run({ id: dev, index, value: ON });
                   break;
                 }
-                case DRIVER_TYPE_PROXY: {
-                  const proxy = get(o[c]) || {};
-                  const target = get(proxy.proxy) || {};
-                  // run({ id: o[i], type: ACTION_ON });
-                  break;
-                }
                 default: {
                   device.send(Buffer.from([ACTION_DO, index, ON]), ip);
                 }
@@ -1853,12 +1887,6 @@ const run = (action) => {
                   drivers.run({ id: dev, index, value: OFF });
                   break;
                 }
-                case DRIVER_TYPE_PROXY: {
-                  const proxy = get(o[c]) || {};
-                  const target = get(proxy.proxy) || {};
-                  // run({ id: o[i], type: ACTION_OFF });
-                  break;
-                }
                 default: {
                   device.send(Buffer.from([ACTION_DO, index, OFF]), ip);
                 }
@@ -1963,29 +1991,6 @@ const run = (action) => {
                     index,
                     value: v,
                   });
-                  break;
-                }
-                case DRIVER_TYPE_PROXY: {
-                  const proxy = get(o[c]) || {};
-                  const target = get(proxy.proxy) || {};
-                  console.log(proxy, target)
-                  switch (target.type) {
-                    case HYGROSTAT: {
-                      run({ id: proxy.proxy, type: ACTION_SETPOINT, humidity: v / 2.55 });
-                      break;
-                    }
-                    default: {
-                      const [id, type, index] = proxy.proxy.split("/");
-                      if (type === 'curtain') {
-                        drivers.run({
-                          type: ACTION_SET_POSITION,
-                          id,
-                          index,
-                          position: action.value / 2.55
-                        });
-                      }
-                    }
-                  }
                   break;
                 }
               }
@@ -2166,253 +2171,18 @@ const run = (action) => {
         }
         break;
       }
-      case ACTION_START_COOL: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { thermostat = [] } = get(id) || {};
-            for (const i of thermostat) {
-              run({ type: ACTION_START_COOL, id: i });
-            }
-            break;
-          }
-          case THERMOSTAT: {
-            const { onStartCool } = get(id) || {};
-            set(id, { cool: true });
-            if (onStartCool) run({ type: ACTION_SCRIPT_RUN, id: onStartCool });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_STOP_COOL: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { thermostat = [] } = get(id) || {};
-            for (const i of thermostat) {
-              run({ type: ACTION_STOP_COOL, id: i });
-            }
-            break;
-          }
-          case THERMOSTAT: {
-            const { onStopCool } = get(id) || {};
-            set(id, { cool: false });
-            if (onStopCool) run({ type: ACTION_SCRIPT_RUN, id: onStopCool });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_START_HEAT: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { thermostat = [] } = get(id) || {};
-            for (const i of thermostat) {
-              run({ type: ACTION_START_HEAT, id: i });
-            }
-            break;
-          }
-          case THERMOSTAT: {
-            const { onStartHeat } = get(id) || {};
-            set(id, { heat: true });
-            if (onStartHeat) run({ type: ACTION_SCRIPT_RUN, id: onStartHeat });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_STOP_HEAT: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { thermostat = [] } = get(id) || {};
-            for (const i of thermostat) {
-              run({ type: ACTION_STOP_HEAT, id: i });
-            }
-            break;
-          }
-          case THERMOSTAT: {
-            const { onStopHeat } = get(id) || {};
-            set(id, { heat: false });
-            if (onStopHeat) run({ type: ACTION_SCRIPT_RUN, id: onStopHeat });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_START_WET: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { hygrostat = [] } = get(id) || {};
-            for (const i of hygrostat) {
-              run({ type: ACTION_START_WET, id: i });
-            }
-            break;
-          }
-          case HYGROSTAT: {
-            const { onStartWet } = get(id) || {};
-            set(id, { wet: true });
-            if (onStartWet) run({ type: ACTION_SCRIPT_RUN, id: onStartWet });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_STOP_WET: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { hygrostat = [] } = get(id) || {};
-            for (const i of hygrostat) {
-              run({ type: ACTION_STOP_WET, id: i });
-            }
-            break;
-          }
-          case HYGROSTAT: {
-            const { onStopWet } = get(id) || {};
-            set(id, { wet: false });
-            if (onStopWet) run({ type: ACTION_SCRIPT_RUN, id: onStopWet });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_START_VENTILATION: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { co2_stat = [] } = get(id) || {};
-            for (const i of co2_stat) {
-              run({ type: ACTION_START_VENTILATION, id: i });
-            }
-            break;
-          }
-          case CO2_STAT: {
-            const { onStartVentilation } = get(id) || {};
-            set(id, { ventilation: true });
-            if (onStartVentilation) run({ type: ACTION_SCRIPT_RUN, id: onStartVentilation });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_STOP_VENTILATION: {
-        const { id } = action;
-        const { type } = get(id) || {};
-        switch (type) {
-          case SITE: {
-            const { co2_stat = [] } = get(id) || {};
-            for (const i of co2_stat) {
-              run({ type: ACTION_STOP_VENTILATION, id: i });
-            }
-            break;
-          }
-          case CO2_STAT: {
-            const { onStopVentilation } = get(id) || {};
-            set(id, { ventilation: false });
-            if (onStopVentilation) run({ type: ACTION_SCRIPT_RUN, id: onStopVentilation });
-            break;
-          }
-        }
-        break;
-      }
-      case ACTION_SETPOINT: {
-        const [id_, t_, index] = action.id ? action.id.split("/") : [];
-        if (t_ === 'ac') {
-          action.id = id_;
-          action.index = index;
-        }
-        const { id, value, temperature, humidity, co2 } = action;
-        const dev = get(id) || {};
-        if (temperature || value) {
-          let setpoint = temperature || value;
-          if (setpoint < 10) setpoint = 10;
-          if (setpoint > 40) setpoint = 40;
-          if (dev.type === SITE) {
-            const { thermostat = [] } = dev
-            for (const t of thermostat) {
-              set(t, { setpoint });
-            }
-            set(id, { setpoint });
-          } else if (dev.type === DRIVER_TYPE_INTESIS_BOX || dev.type === DRIVER_TYPE_MD_CCM18_AN_E || dev.type === DRIVER_TYPE_TICA || dev.type === DRIVER_TYPE_NOVA || dev.type === DRIVER_TYPE_SWIFT || dev.type === DRIVER_TYPE_ALINK || dev.type === DRIVER_TYPE_COMFOVENT) {
-            if (temperature) action.value = temperature;
-            drivers.run(action);
-          } else {
-            set(id, { setpoint });
-          }
-        } else if (humidity) {
-          let setpoint = humidity;
-          if (setpoint < 10) setpoint = 10;
-          if (setpoint > 90) setpoint = 90;
-          if (dev.type === SITE) {
-            const { hygrostat = [] } = dev;
-            for (const t of hygrostat) {
-              set(t, { setpoint });
-            }
-          } else {
-            set(id, { setpoint });
-          }
-        } else if (co2) {
-          let setpoint = co2;
-          if (setpoint < 200) setpoint = 200;
-          if (setpoint > 1200) setpoint = 1200;
-          if (dev.type === SITE) {
-            const { co2_stat = [] } = dev;
-            for (const t of co2_stat) {
-              set(t, { setpoint });
-            }
-          } else {
-            set(id, { setpoint });
-          }
-        }
-        break;
-      }
-      case ACTION_SETPOINT_MIN_MAX: {
-        const { id, min, max } = action;
-        const dev = get(id) || {};
-        set(id, { min, max });
-        break;
-      }
-      case ACTION_INC_SETPOINT: {
-        const { thermostat, display } = action;
-        if (thermostat) {
-          let { setpoint = 4 } = get(thermostat) || {};
-          setpoint++;
-          if (setpoint > 35) setpoint = 35;
-          run({ type: ACTION_SETPOINT, id: thermostat, value: setpoint });
-          if (display) {
-            set(display, { lock: true });
-            run({ type: ACTION_IMAGE, id: display, value: setpoint });
-            setTimeout(set, 5000, display, { lock: false });
-          }
-        }
-        break;
-      }
-      case ACTION_DEC_SETPOINT: {
-        const { thermostat, display } = action;
-        if (thermostat) {
-          let { setpoint = 34 } = get(thermostat) || {};
-          setpoint--;
-          if (setpoint < 5) setpoint = 5;
-          run({ type: ACTION_SETPOINT, id: thermostat, value: setpoint });
-          if (display) {
-            set(display, { lock: true });
-            run({ type: ACTION_IMAGE, id: display, value: setpoint });
-            setTimeout(set, 5000, display, { lock: false });
-          }
-        }
-        break;
-      }
+      case ACTION_START_COOL: { climate.handleStartCool(action, run); break; }
+      case ACTION_STOP_COOL: { climate.handleStopCool(action, run); break; }
+      case ACTION_START_HEAT: { climate.handleStartHeat(action, run); break; }
+      case ACTION_STOP_HEAT: { climate.handleStopHeat(action, run); break; }
+      case ACTION_START_WET: { climate.handleStartWet(action, run); break; }
+      case ACTION_STOP_WET: { climate.handleStopWet(action, run); break; }
+      case ACTION_START_VENTILATION: { climate.handleStartVentilation(action, run); break; }
+      case ACTION_STOP_VENTILATION: { climate.handleStopVentilation(action, run); break; }
+      case ACTION_SETPOINT: { climate.handleSetpoint(action, run); break; }
+      case ACTION_SETPOINT_MIN_MAX: { climate.handleSetpointMinMax(action); break; }
+      case ACTION_INC_SETPOINT: { climate.handleIncSetpoint(action, run); break; }
+      case ACTION_DEC_SETPOINT: { climate.handleDecSetpoint(action, run); break; }
       case ACTION_INTENSITY: {
         const { id, cool, heat, ventilation } = action;
         const dev = get(id) || {};
@@ -2476,140 +2246,15 @@ const run = (action) => {
         }
         break;
       }
-      case ACTION_TIMER_START: {
-        const { id, script, time } = action;
-        clearTimeout(timers[id]);
-        timers[id] = setTimeout(() => {
-          set(id, { time: 0, state: false });
-          run({ type: ACTION_SCRIPT_RUN, id: script });
-        }, parseInt(time));
-        set(id, { time, script, state: true, timestamp: Date.now() });
-        break;
-      }
-      case ACTION_TIMER_STOP: {
-        const { id } = action;
-        clearTimeout(timers[id]);
-        set(id, { time: 0, state: false });
-        break;
-      }
-      case ACTION_SCHEDULE_START: {
-        const { id, script, schedule } = action;
-        if (schedules[id]) {
-          schedules[id].stop();
-          delete schedules[id];
-        }
-        if (schedule && script) {
-          schedules[id] = new CronJob(
-            schedule,
-            () => {
-              run({ type: ACTION_SCRIPT_RUN, id: script });
-            },
-            () => {
-              set(id, { state: false });
-            },
-            true
-          );
-          set(id, { state: true, script, schedule });
-        } else {
-          set(id, { state: false });
-        }
-        break;
-      }
-      case ACTION_SCHEDULE_STOP: {
-        const { id } = action;
-        if (schedules[id]) {
-          schedules[id].stop();
-          delete schedules[id];
-        }
-        set(id, { state: false });
-        break;
-      }
-      case ACTION_CLOCK_START: {
-        const { id } = action;
-        const { state } = get(id);
-        if (!state) {
-          set(id, { timestamp: Date.now(), state: true });
-        }
-        break;
-      }
-      case ACTION_CLOCK_STOP: {
-        const { id } = action;
-        const { state } = get(id);
-        if (state) {
-          set(id, { timestamp: Date.now(), state: false });
-        }
-        break;
-      }
-      case ACTION_CLOCK_TEST: {
-        const { id, time, onTrue, onFalse, operator } = action;
-        const { timestamp, state } = get(id);
-        const t = Date.now() - timestamp;
-        let script;
-        if (state) {
-          switch (operator) {
-            case OPERATOR_LT: {
-              script = t < time ? onTrue : onFalse;
-              break;
-            }
-            case OPERATOR_LE: {
-              script = t <= time ? onTrue : onFalse;
-              break;
-            }
-            case OPERATOR_EQ: {
-              script = t === time ? onTrue : onFalse;
-              break;
-            }
-            case OPERATOR_NE: {
-              script = t !== time ? onTrue : onFalse;
-              break;
-            }
-            case OPERATOR_GE: {
-              script = t >= time ? onTrue : onFalse;
-              break;
-            }
-            case OPERATOR_GT: {
-              script = t > time ? onTrue : onFalse;
-              break;
-            }
-          }
-          if (script) {
-            run({ type: ACTION_SCRIPT_RUN, id: script });
-          }
-        }
-        break;
-      }
-      case ACTION_DAY_TEST: {
-        const { project } = get(mac());
-        if (project) {
-          const { weather } = get(project);
-          if (weather && weather.sys) {
-            const { sunrise, sunset } = weather.sys;
-            const { onFalse, onTrue } = action;
-            const now = Date.now();
-            const script = now > sunrise && now < sunset ? onTrue : onFalse;
-            if (script) {
-              run({ type: ACTION_SCRIPT_RUN, id: script });
-            }
-          }
-        }
-        break;
-      }
-      case ACTION_NIGHT_TEST: {
-        const { project } = get(mac());
-        if (project) {
-          const { weather } = get(project);
-          if (weather && weather.sys) {
-            const { sunrise, sunset } = weather.sys;
-            const { onFalse, onTrue } = action;
-            const now = Date.now();
-            const script = now < sunrise || now > sunset ? onTrue : onFalse;
-            if (script) {
-              run({ type: ACTION_SCRIPT_RUN, id: script });
-            }
-          }
-        }
-        break;
-      }
+      case ACTION_TIMER_START: { scheduling.handleTimerStart(action, run); break; }
+      case ACTION_TIMER_STOP: { scheduling.handleTimerStop(action); break; }
+      case ACTION_SCHEDULE_START: { scheduling.handleScheduleStart(action, run); break; }
+      case ACTION_SCHEDULE_STOP: { scheduling.handleScheduleStop(action); break; }
+      case ACTION_CLOCK_START: { scheduling.handleClockStart(action); break; }
+      case ACTION_CLOCK_STOP: { scheduling.handleClockStop(action); break; }
+      case ACTION_CLOCK_TEST: { scheduling.handleClockTest(action, run); break; }
+      case ACTION_DAY_TEST: { scheduling.handleDayTest(action, run); break; }
+      case ACTION_NIGHT_TEST: { scheduling.handleNightTest(action, run); break; }
       case ACTION_DOPPLER_HANDLE: {
         const { id, low, high, onQuiet, onLowThreshold, onHighThreshold, index = 0 } =
           action;
@@ -2645,203 +2290,10 @@ const run = (action) => {
         }
         break;
       }
-      case ACTION_THERMOSTAT_HANDLE: {
-        const {
-          id,
-          cool = true,
-          heat = true,
-          cool_hysteresis,
-          cool_threshold,
-          cool_intensity,
-          heat_hysteresis,
-          heat_threshold,
-          heat_intensity,
-          onStartHeat,
-          onStartCool,
-          onStopHeat,
-          onStopCool,
-          onCoolIntensity,
-          onHeatIntensity,
-        } = action;
-        const { setpoint, mode, site } = get(id) || {};
-        const { temperature } = get(site) || {};
-        const make = (state, script, mode, enabled, intensity, onIntensity = []) => () => {
-          set(id, { state, mode });
-          if (!enabled) return;
-          if (script) {
-            run({ type: ACTION_SCRIPT_RUN, id: script });
-          }
-          if (intensity >= 0 && onIntensity[intensity]) {
-            run({ type: ACTION_SCRIPT_RUN, id: onIntensity[intensity] });
-          }
-        };
-        const stopCool = make(STOP, onStopCool, mode, cool);
-        const stopHeat = make(STOP, onStopHeat, mode, heat);
-        const startCool = make(COOL, onStartCool, COOL, cool, cool_intensity, onCoolIntensity);
-        const startHeat = make(HEAT, onStartHeat, HEAT, heat, heat_intensity, onHeatIntensity);
-        switch (mode) {
-          case HEAT: {
-            // stopCool();
-            if (temperature > setpoint - (- heat_threshold)) {
-              stopHeat();
-              startCool();
-            } else if (temperature > setpoint - (- heat_hysteresis)) {
-              // stopCool();
-              stopHeat();
-            } else if (temperature < setpoint - heat_hysteresis) {
-              // stopCool();
-              startHeat();
-            }
-            break;
-          }
-          case COOL: {
-            // stopHeat();
-            if (temperature < setpoint - cool_threshold) {
-              stopCool();
-              startHeat();
-            } else if (temperature < setpoint - cool_hysteresis) {
-              // stopHeat();
-              stopCool();
-            } else if (temperature > setpoint - (- cool_hysteresis)) {
-              // stopHeat();
-              startCool();
-            }
-            break;
-          }
-          default: {
-            if (temperature > setpoint) {
-              stopHeat();
-              startCool();
-            } else if (temperature < setpoint) {
-              stopCool();
-              startHeat();
-            } else {
-              stopCool();
-              stopHeat();
-            }
-          }
-        }
-        break;
-      }
-      case ACTION_HYGROSTAT_HANDLE: {
-        const {
-          id,
-          dry = true,
-          wet = true,
-          dry_hysteresis,
-          dry_threshold,
-          wet_hysteresis,
-          wet_threshold,
-          onStartDry,
-          onStartWet,
-          onStopDry,
-          onStopWet,
-        } = action;
-        const { setpoint, mode, site } = get(id) || {};
-        const { humidity } = get(site) || {};
-        const make = (state, script, mode, enabled) => () => {
-          set(id, { state, mode });
-          if (!enabled) return;
-          if (script) {
-            run({ type: ACTION_SCRIPT_RUN, id: script });
-          }
-        };
-        const stopDry = make(STOP, onStopDry, DRY, dry);
-        const stopWet = make(STOP, onStopWet, WET, wet);
-        const startDry = make(DRY, onStartDry, DRY, dry);
-        const startWet = make(WET, onStartWet, WET, wet);
-        switch (mode) {
-          case WET: {
-            if (humidity > setpoint - (- wet_threshold)) {
-              stopWet();
-              startDry();
-            } else if (humidity > setpoint - (- wet_hysteresis)) {
-              stopWet();
-            } else if (humidity < setpoint - wet_hysteresis) {
-              startWet();
-            }
-            break;
-          }
-          case DRY: {
-            if (humidity < setpoint - dry_threshold) {
-              stopDry();
-              startWet();
-            } else if (humidity < setpoint - dry_hysteresis) {
-              stopDry();
-            } else if (humidity > setpoint - (- dry_hysteresis)) {
-              startDry();
-            }
-            break;
-          }
-          default: {
-            if (humidity > setpoint) {
-              stopWet();
-              startDry();
-            } else if (humidity < setpoint) {
-              stopDry();
-              startWet();
-            } else {
-              stopDry();
-              stopWet();
-            }
-          }
-        }
-        break;
-      }
-      case ACTION_CO2_STAT_HANDLE: {
-        const {
-          id,
-          ventilation = true,
-          hysteresis,
-          ventilation_intensity,
-          onStartVentilation,
-          onStopVentilation,
-          onVentilationIntensity,
-        } = action;
-        const { setpoint, site } = get(id) || {};
-        const { co2 } = get(site) || {};
-        const make = (state, script, intensity, onIntensity = []) => () => {
-          set(id, { state });
-          if (!ventilation) return;
-          if (script) {
-            run({ type: ACTION_SCRIPT_RUN, id: script });
-          }
-          if (intensity >= 0 && onIntensity[intensity]) {
-            run({ type: ACTION_SCRIPT_RUN, id: onIntensity[intensity] });
-          }
-        };
-        const stopVentilation = make(STOP, onStopVentilation);
-        const startVentilation = make(VENTILATION, onStartVentilation, ventilation_intensity, onVentilationIntensity);
-        if (co2 > setpoint - (- hysteresis)) {
-          startVentilation();
-        } else if (co2 < setpoint - hysteresis) {
-          stopVentilation();
-        }
-        break;
-      }
-      case ACTION_LIMIT_HEATING_HANDLE: {
-        const { id, hysteresis, onStartHeat, onStopHeat } = action;
-        const { min, max, sensor } = get(id) || {};
-        if (!sensor) return;
-        const { temperature } = get(sensor) || {};
-        if (!temperature) return;
-        const make = (script) => () => {
-          if (script) {
-            run({ type: ACTION_SCRIPT_RUN, id: script });
-          }
-        };
-        const stopHeat = make(onStopHeat);
-        const startHeat = make(onStartHeat);
-        set(id, { disabled: false });
-        if (temperature > max - (-hysteresis)) {
-          stopHeat();
-          set(id, { disabled: true });
-        } else if (temperature < min - hysteresis) {
-          startHeat();
-          set(id, { disabled: true });
-        }
-        break;
-      }
+      case ACTION_THERMOSTAT_HANDLE: { climate.handleThermostat(action, run); break; }
+      case ACTION_HYGROSTAT_HANDLE: { climate.handleHygrostat(action, run); break; }
+      case ACTION_CO2_STAT_HANDLE: { climate.handleCo2Stat(action, run); break; }
+      case ACTION_LIMIT_HEATING_HANDLE: { climate.handleLimitHeating(action, run); break; }
       case ACTION_TOGGLE: {
         const { test = [], onOn, onOff } = action;
         const f = test.find((i) => {
@@ -3062,6 +2514,8 @@ const run = (action) => {
       }
       case ACTION_SET_ADDRESS:
       case ACTION_DELETE_ADDRESS:
+      case ACTION_UP:
+      case ACTION_DOWN:
       case ACTION_LIMIT_UP:
       case ACTION_LIMIT_DOWN:
       case ACTION_LEARN:
@@ -3069,7 +2523,7 @@ const run = (action) => {
       case ACTION_SET_DIRECTION:
       case ACTION_SET_FAN_SPEED: {
         const [id_, t_, index] = action.id ? action.id.split("/") : [];
-        if (t_ === 'ac' || t_ === 'curtain') {
+        if (t_ === 'ac') {
           action.id = id_;
           action.index = index;
         }
@@ -3146,7 +2600,12 @@ const run = (action) => {
         break;
       }
       case ACTION_SHELL_START: {
-        const { id, command } = action;
+        const { id } = action;
+        const command = action.command ?? action.payload?.command ?? (get(id) || {}).command;
+        if (!command || typeof command !== 'string') {
+          set(id, { error: 'command required' });
+          return;
+        }
         const { pid } = get(id) || {};
         if (pid) {
           try {
@@ -3155,6 +2614,8 @@ const run = (action) => {
             set(id, { pid: null, value: false });
           }
         }
+        if (tryMediaCommand(command, id)) break;
+
         const child = childProcess.spawn(command, { detached: true, shell: true });
         // child.stdout.on("data", (data) => {
         //   const { pid } = get(id) || {};
@@ -3437,6 +2898,9 @@ const run = (action) => {
   } catch (e) {
     console.error(action);
     console.error(e);
+  } finally {
+    // Уменьшаем счетчик при выходе из функции (успешном или с ошибкой)
+    recursionDepth--;
   }
 };
 

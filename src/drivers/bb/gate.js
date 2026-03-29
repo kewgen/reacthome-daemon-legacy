@@ -9,6 +9,9 @@ const DEVICE_PORT = 2017;
 const DEVICE_SERVER_PORT = 2016;
 const DEVICE_GROUP = '224.0.0.1';
 
+const BB_PLC_HOST_1 = process.env.BB_PLC_HOST_1 || '192.168.0.11';
+const BB_PLC_HOST_2 = process.env.BB_PLC_HOST_2 || '192.168.0.12';
+
 const ACTION_SET = 'action_set';
 
 const message = (id, ...a) => Buffer.from([...id, ...a]);
@@ -40,12 +43,12 @@ plc[0].slave = new modbus.tcp.slave({
     port: 2502
 });
 plc[0].master = new modbus.tcp.master({
-    host: '192.168.0.11',
+    host: BB_PLC_HOST_1,
     port: 502,
     device: 0
 });
 plc[1].master = new modbus.tcp.master({
-    host: '192.168.0.12',
+    host: BB_PLC_HOST_2,
     port: 503,
     device: 1
 });

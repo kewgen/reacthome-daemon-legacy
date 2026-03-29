@@ -33,11 +33,13 @@ module.exports.run = (action) => {
   const { id, type } = action;
   switch (type) {
     case ACTION_ON: {
-      set(id, { value: true, synced: false });
+      // Команда хранится отдельно, чтобы периодический readback не инициировал ложные переключения автоматики.
+      set(id, { value: true, desired_value: true, synced: false });
       break;
     }
     case ACTION_OFF: {
-      set(id, { value: false, synced: false });
+      // Команда хранится отдельно, чтобы периодический readback не инициировал ложные переключения автоматики.
+      set(id, { value: false, desired_value: false, synced: false });
       break;
     }
     case ACTION_SET_MODE: {
@@ -65,14 +67,15 @@ module.exports.handle = (action) => {
     case READ_HOLDING_REGISTERS: {
       const dev = get(id) || {};
       if (dev.synced) {
+        const actualValue = data.readUInt16BE(2);
         set(id, {
-          value: data.readUInt16BE(2),
+          actual_value: actualValue,
           mode: data.readUInt16BE(4),
           fan_speed: data.readUInt16BE(6),
           direction: data.readUInt16BE(8),
           setpoint: data.readUInt16BE(10),
           synced: true
-        })
+        });
       }
       break;
     }

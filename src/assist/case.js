@@ -107,6 +107,6 @@ const tests = [
 ]
 
 for (const test of tests) {
-    // console.log(test)
-    // console.log(Object.keys(cases).map(c => toCase(test, c)))
+    console.log(test)
+    console.log(Object.keys(cases).map(c => toCase(test, c)))
 }

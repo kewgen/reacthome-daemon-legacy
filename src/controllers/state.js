@@ -8,6 +8,11 @@ module.exports.set = (id, payload) => {
   if (state[id] === undefined) {
     state[id] = payload;
   } else {
+    const toDelete = payload.__delete;
+    if (Array.isArray(toDelete)) {
+      for (const k of toDelete) delete state[id][k];
+      delete payload.__delete;
+    }
     Object.assign(state[id], payload);
   }
 };

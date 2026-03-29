@@ -9,6 +9,8 @@ const port = 3000;
 
 module.exports = () => {
   const server = new Server({ port });
+  server.on('listening', () => console.log('[WS] listening on', port));
+  server.on('error', (e) => console.error('[WS] error:', e.message || e));
   server.on("connection", (socket) => {
     const session = uuid();
     socket.on("message", (message) => {

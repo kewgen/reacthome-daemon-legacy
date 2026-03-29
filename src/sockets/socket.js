@@ -3,7 +3,8 @@ const { createSocket } = require('dgram');
 
 module.exports = (discovery, interval, port, listen, multicast) => {
 
-  const socket = createSocket('udp4');
+  // reuseAddr позволяет повторно биндить порт при быстром рестарте (без EADDRINUSE)
+  const socket = createSocket({ type: 'udp4', reuseAddr: true });
 
   const send = (packet, ip) => {
     socket.send(packet, port, ip, (err) => {
