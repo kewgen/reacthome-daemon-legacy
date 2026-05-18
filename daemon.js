@@ -89,7 +89,6 @@ const load = async () => {
     delete d.ip;
     set(init.mac, d);
   }
-  // cleanup(init);
   assets.init();
   state.init(init);
   initAssist();
@@ -104,6 +103,24 @@ const load = async () => {
   sip.start();
   start(init.mac);
   set(init.mac, { token: [] });
+
+  // Периодическая чистка orphan-объектов через mark-and-sweep (gc.cleanup).
+  // Раньше cleanup(init) на строке 92 был закомментирован из-за багов в
+  // build()/cleanup() (см. INC-049). Баги починены и покрыты тестами в
+  // коммите fix(gc): 4 critical bugs..., safety-механизмы (backup, лимит,
+  // event-log) добавлены в feat(gc): backup + delete limit...
+  //
+  // Первая чистка — через 10 минут после старта (демон должен прогреться,
+  // дискавери устройств завершиться, чтобы не пометить непришедшие как сирот).
+  // Затем — каждые 24 часа.
+  const GC_INITIAL_DELAY_MS = 10 * 60 * 1000;
+  const GC_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  setTimeout(() => {
+    try { cleanup(init); } catch (e) { console.error('[gc] initial cleanup failed:', e.message); }
+    setInterval(() => {
+      try { cleanup(init); } catch (e) { console.error('[gc] periodic cleanup failed:', e.message); }
+    }, GC_INTERVAL_MS);
+  }, GC_INITIAL_DELAY_MS);
 };
 
 load();
