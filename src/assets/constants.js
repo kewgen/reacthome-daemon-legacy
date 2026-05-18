@@ -7,3 +7,4 @@ module.exports.VAR = p('var');
 module.exports.DB = p('var', 'db');
 module.exports.TMP = p('var', 'tmp');
 module.exports.ASSETS = p('var', 'assets');
+module.exports.BACKUPS_GC = p('var', 'backups', 'gc');

@@ -7,7 +7,7 @@
 const assert = require('assert');
 const path = require('path');
 
-// Mock db/asset/fs до загрузки gc — модуль кеширует require()
+// Mock db/asset/fs/child_process до загрузки gc — модуль кеширует require()
 const dbMock = { puts: [], dels: [] };
 require.cache[require.resolve('../src/db')] = {
   exports: {
@@ -18,8 +18,25 @@ require.cache[require.resolve('../src/db')] = {
 require.cache[require.resolve('../src/fs')] = {
   exports: { asset: (i) => `/tmp/test-assets/${i}` },
 };
+// Подменяем все используемые константы (DB, ASSETS, BACKUPS_GC)
+const TEST_TMP = require('fs').mkdtempSync('/tmp/gc-test-');
+const TEST_DB = `${TEST_TMP}/db`;
+const TEST_BACKUPS = `${TEST_TMP}/backups/gc`;
+require('fs').mkdirSync(TEST_DB, { recursive: true });
+require('fs').mkdirSync(TEST_BACKUPS, { recursive: true });
 require.cache[require.resolve('../src/assets/constants')] = {
-  exports: { ASSETS: '/tmp/test-assets-nonexistent-dir-' + Date.now() },
+  exports: {
+    ASSETS: `${TEST_TMP}/assets-nonexistent`,
+    DB: TEST_DB,
+    BACKUPS_GC: TEST_BACKUPS,
+  },
+};
+// Mock execSync чтобы tar-команда в backupDb не падала на CI
+const cpMock = { execCalls: [] };
+require.cache[require.resolve('child_process')] = {
+  exports: Object.assign({}, require('child_process'), {
+    execSync: (cmd) => { cpMock.execCalls.push(cmd); return ''; },
+  }),
 };
 // Mock readdirSync чтобы не падать на assets cleanup
 require.cache[require.resolve('fs')] = {
@@ -157,6 +174,77 @@ test('Daemon-объект корня (pool.mac) не удалён', () => {
   cleanup(pool);
   assert.ok(pool['01:02:03:04:05:06'], 'DAEMON-корень удалён');
   assert.ok(pool.mac === '01:02:03:04:05:06', 'pool.mac затёрт');
+});
+
+test('Backup создаётся перед удалением (execSync с tar)', () => {
+  const pool = makePool();
+  resetDbMock();
+  cpMock.execCalls.length = 0;
+  cleanup(pool);
+  // Должен быть один execSync с tar czf
+  const tarCalls = cpMock.execCalls.filter(c => c.startsWith('tar czf'));
+  assert.strictEqual(tarCalls.length, 1, `ожидался 1 tar-вызов, было ${tarCalls.length}`);
+});
+
+test('MAX_DELETE_PER_RUN: abort если orphan > 50, без force', () => {
+  const pool = makePool();
+  // Добавим 55 сирот
+  for (let i = 0; i < 55; i++) {
+    pool[`orphan-${i}`] = { type: 'shell', command: `unused-${i}` };
+  }
+  resetDbMock();
+  cpMock.execCalls.length = 0;
+  const result = cleanup(pool);
+  assert.strictEqual(result.aborted, true, 'cleanup не отменился при превышении лимита');
+  assert.strictEqual(result.deleted, 0, 'cleanup удалил несмотря на abort');
+  assert.strictEqual(dbMock.dels.length, 0, 'db.del вызван несмотря на abort');
+  // Сироты остались
+  assert.ok(pool['orphan-0'], 'orphan-0 удалён при aborted cleanup');
+});
+
+test('MAX_DELETE_PER_RUN: с force=true удаляет даже больше лимита', () => {
+  const pool = makePool();
+  for (let i = 0; i < 55; i++) {
+    pool[`orphan-${i}`] = { type: 'shell', command: `unused-${i}` };
+  }
+  resetDbMock();
+  const result = cleanup(pool, { force: true });
+  assert.ok(result.deleted >= 55, `ожидалось >= 55 удалений, было ${result.deleted}`);
+});
+
+test('keep: true в payload защищает объект от удаления (whitelist через флаг)', () => {
+  const pool = makePool();
+  // Сирота с keep=true — например, заготовка под будущую миграцию (INC-051)
+  pool['protected-orphan'] = {
+    type: 'shell',
+    title: 'Уведомление',
+    command: 'curl https://...',
+    keep: true,
+  };
+  // Обычная сирота для сравнения
+  pool['unprotected-orphan'] = { type: 'shell', command: 'old-stuff' };
+  resetDbMock();
+  cleanup(pool, { force: true });
+  assert.ok(pool['protected-orphan'], 'удалён объект с keep:true');
+  assert.ok(!pool['unprotected-orphan'], 'не удалён обычный сирота');
+});
+
+test('MAC-style id (физические устройства) НИКОГДА не удаляются, даже если mark их не достиг', () => {
+  const pool = makePool();
+  // Добавим 1-Wire slave-устройства (28: семейство), которые в реальной БД
+  // привязаны к master через device-specific массивы (temperature_ext[]),
+  // которые build() не обходит. Без MAC-protect они бы удалились.
+  pool['28:38:be:96:51:21:01:dc'] = { type: 240, master: '90:89:d3:f1:2d:0f', code: 'Улица' };
+  pool['28:10:f7:f7:44:21:01:b1'] = { type: 240, master: '90:89:d3:f1:2d:0f', code: 'Пол лоджия' };
+  // Добавим UUID-подканал IntesisBox
+  pool['51cb6aba-557a-457b-8344-b13748540c9e/modbus/1'] = { type: 'modbus', bind: '364c5a4f-a335-4b0d-81b0-1cfdd7ae6278' };
+  resetDbMock();
+  cleanup(pool, { force: true });
+  assert.ok(pool['28:38:be:96:51:21:01:dc'], 'удалён 1-Wire 28:38:be:... (Геркон Улица)');
+  assert.ok(pool['28:10:f7:f7:44:21:01:b1'], 'удалён 1-Wire 28:10:f7:... (Пол лоджия)');
+  assert.ok(pool['51cb6aba-557a-457b-8344-b13748540c9e/modbus/1'], 'удалён UUID-канал IntesisBox modbus/1');
+  assert.ok(!dbMock.dels.includes('28:38:be:96:51:21:01:dc'), 'db.del вызван для MAC-устройства');
+  assert.ok(!dbMock.dels.includes('51cb6aba-557a-457b-8344-b13748540c9e/modbus/1'), 'db.del для UUID-канала');
 });
 
 // ============ Runner ============
