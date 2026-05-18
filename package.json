@@ -4,6 +4,9 @@
   "main": "daemon.js",
   "author": "Evgeny <gazdovsky@gmail.com>",
   "license": "MIT",
+  "scripts": {
+    "test": "node tests/gc.test.js"
+  },
   "dependencies": {
     "apn": "^2.2.0",
     "better-sqlite3": "^11.9.1",
