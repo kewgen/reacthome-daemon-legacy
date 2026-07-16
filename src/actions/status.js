@@ -33,6 +33,16 @@ const offline = (id) => {
   set(id, { online: false, ready: false, initialized: false });
 };
 
+// Пауза связи на старте демона: соединения ещё нет, но ready/initialized
+// устройство не отзывало — сохраняем их из БД. Стирание здесь приводило к тому,
+// что после каждого рестарта демона доплеры и SMART_TOP часами висели с
+// ready=false («чёрные треугольники»): DATA-кадры возвращают только online,
+// а DISCOVERY эти классы шлют редко. Runtime-потерю связи по-прежнему
+// обрабатывает offline() по watchdog-таймауту.
+const suspend = (id) => {
+  set(id, { online: false });
+};
+
 const online = (id, props) => {
   clearTimeout(timeout[id]);
   const dev = get(id) || {};
@@ -94,4 +104,4 @@ const online = (id, props) => {
   }, 2 * DISCOVERY_INTERVAL);
 };
 
-module.exports = { offline, online };
+module.exports = { offline, online, suspend };

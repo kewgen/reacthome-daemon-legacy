@@ -114,6 +114,7 @@ const {
   count_off,
   offline,
   online,
+  suspend,
   updateFirmware,
   initialize,
   initialized,
@@ -138,7 +139,10 @@ const timestamp = {}
 module.exports.manage = () => {
   const devices = (get(mac()) || {}).device || [];
   for (const id of devices) {
-    offline(id);
+    // suspend, а не offline: при старте демона сохраняем ready/initialized
+    // из БД — иначе после каждого рестарта доплеры/SMART_TOP часами висят
+    // с ready=false, пока сами не пришлют редкий DISCOVERY.
+    suspend(id);
   }
 
   const handleData = (data, { address }, { hub = null } = {}) => {

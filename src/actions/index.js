@@ -8,7 +8,7 @@ const {
   makeBind,
   applySite,
 } = require("./create");
-const { online, offline } = require("./status");
+const { online, offline, suspend } = require("./status");
 const { pendingFirmware, updateFirmware } = require("./firmware");
 const { initialize, initialized } = require("./init");
 const { count, count_on, count_off } = require("./count");
@@ -24,6 +24,7 @@ module.exports = {
   applySite,
   online,
   offline,
+  suspend,
   pendingFirmware,
   updateFirmware,
   initialize,
